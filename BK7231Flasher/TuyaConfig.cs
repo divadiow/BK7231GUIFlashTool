@@ -18,7 +18,7 @@ namespace BK7231Flasher
         static int SECTOR_SIZE = 4096;
         static uint MAGIC_FIRST_BLOCK = 0x13579753;
         static uint MAGIC_NEXT_BLOCK = 0x98761234;
-        static byte[] KEY_PART_1 = Encoding.ASCII.GetBytes("8710_2M");
+        static byte[] KEY_PART_1 = Encoding.ASCII.GetBytes("keyge8wsy99n5pr7");
         static byte[] KEY_PART_2 = Encoding.ASCII.GetBytes("HHRRQbyemofrtytf");
         static byte[] MAGIC_CONFIG_START = new byte[] { 0x46, 0xDC, 0xED, 0x0E, 0x67, 0x2F, 0x3B, 0x70, 0xAE, 0x12, 0x76, 0xA3, 0xF8, 0x71, 0x2E, 0x03 };
         // TODO: check more bins with this offset
@@ -844,3 +844,4 @@ namespace BK7231Flasher
         }
     }
 }
+
