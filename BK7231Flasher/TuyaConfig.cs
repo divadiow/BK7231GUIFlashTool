@@ -20,7 +20,7 @@ namespace BK7231Flasher
         static uint MAGIC_NEXT_BLOCK = 0x98761234;
         static byte[] KEY_PART_1 = Encoding.ASCII.GetBytes("keyge8wsy99n5pr7");
         static byte[] KEY_PART_2 = Encoding.ASCII.GetBytes("HHRRQbyemofrtytf");
-        static byte[] MAGIC_CONFIG_START = new byte[] { 0x46, 0xDC, 0xED, 0x0E, 0x67, 0x2F, 0x3B, 0x70, 0xAE, 0x12, 0x76, 0xA3, 0xF8, 0x71, 0x2E, 0x03 };
+        static byte[] MAGIC_CONFIG_START = new byte[] { 0x3e, 0xa4, 0x0, 0x30, 0x9d, 0xab, 0x65, 0x6d, 0x8d, 0xbf, 0xe4, 0xb9, 0x3f, 0x35, 0x4b, 0xc9 };
         // TODO: check more bins with this offset
         // hex 0x1EE000
         // While flash is 0x200000, so we have at most 0x12000 bytes there...
@@ -844,4 +844,5 @@ namespace BK7231Flasher
         }
     }
 }
+
 
