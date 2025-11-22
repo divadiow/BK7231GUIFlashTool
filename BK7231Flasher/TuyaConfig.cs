@@ -870,109 +870,171 @@ namespace BK7231Flasher
             r += "}" + Environment.NewLine;
             return r;
         }
-        public bool extractKeys()
+public bool extractKeys()
+{
+    int first_at = 0;
+    int keys_at = MiscUtils.indexOf(descryptedRaw, Encoding.ASCII.GetBytes("user_param_key"));
+    bool useFullBuffer = false;
+
+    // Try to locate a sensible JSON/config start
+    if (keys_at == -1)
+    {
+        int jsonAt = MiscUtils.indexOf(descryptedRaw, Encoding.ASCII.GetBytes("Jsonver"));
+        if (jsonAt != -1)
         {
-            int first_at = 0;
-            int keys_at = MiscUtils.indexOf(descryptedRaw, Encoding.ASCII.GetBytes("user_param_key"));
-            //var t = Encoding.ASCII.GetString(descryptedRaw.Where(x => x != 0).ToArray());
+            // Go backwards to the opening '{'
+            keys_at = MiscUtils.findFirstRev(descryptedRaw, (byte)'{', jsonAt);
+        }
+
+        if (keys_at == -1)
+        {
+            // Try "ap_s{"
+            keys_at = MiscUtils.indexOf(descryptedRaw, Encoding.ASCII.GetBytes("ap_s{"));
+
             if (keys_at == -1)
             {
-                int jsonAt = MiscUtils.indexOf(descryptedRaw, Encoding.ASCII.GetBytes("Jsonver"));
-                if(jsonAt != -1)
-                {
-                    keys_at = MiscUtils.findFirstRev(descryptedRaw, (byte)'{', jsonAt);
-                }
+                // Try "baud_cfg"
+                keys_at = MiscUtils.indexOf(descryptedRaw, Encoding.ASCII.GetBytes("baud_cfg"));
+
                 if (keys_at == -1)
                 {
-                    keys_at = MiscUtils.indexOf(descryptedRaw, Encoding.ASCII.GetBytes("ap_s{"));
+                    // Last resort: try "gw_bi"
+                    keys_at = MiscUtils.indexOf(descryptedRaw, Encoding.ASCII.GetBytes("gw_bi"));
 
-                    if(keys_at == -1)
+                    if (keys_at == -1)
                     {
-                        keys_at = MiscUtils.indexOf(descryptedRaw, Encoding.ASCII.GetBytes("baud_cfg"));
-                        if(keys_at == -1)
-                        {
-                            // extract at least something
-                            keys_at = MiscUtils.indexOf(descryptedRaw, Encoding.ASCII.GetBytes("gw_bi"));
-                            if(keys_at == -1)
-                            {
-                                FormMain.Singleton.addLog("Failed to extract Tuya keys - no json start found" + Environment.NewLine, System.Drawing.Color.Orange);
-                                return true;
-                            }
-                        }
-                        while(descryptedRaw[keys_at] != '{' && keys_at <= descryptedRaw.Length)
-                            keys_at++;
-                        keys_at++;
-                        first_at = keys_at;
+                        // RELAXED MODE:
+                        // None of the known markers were found – don't fail,
+                        // just scan the whole decrypted buffer for ASCII key/value pairs.
+                        FormMain.Singleton.addLog(
+                            "Failed to find typical Tuya JSON markers, falling back to scanning entire decrypted buffer for keys"
+                            + Environment.NewLine, System.Drawing.Color.Orange);
+
+                        useFullBuffer = true;
+                        first_at = 0;
                     }
-                    else
-                    {
-                        first_at = keys_at + 5;
-                    }
-                }
-                else
-                {
-                    first_at = keys_at + 1;
                 }
             }
-            else
+
+            if (!useFullBuffer)
             {
-                while(descryptedRaw[keys_at] != '{' && keys_at <= descryptedRaw.Length)
+                // We found some marker – advance to first '{'
+                while (keys_at < descryptedRaw.Length && descryptedRaw[keys_at] != '{')
                     keys_at++;
-                keys_at++;
-                first_at = keys_at;
-            }
-            int stopAT = MiscUtils.findMatching(descryptedRaw, (byte)'}', (byte)'{', first_at);
-            if (stopAT == -1)
-            {
-                //FormMain.Singleton.addLog("Failed to extract Tuya keys - no json end found" + Environment.NewLine, System.Drawing.Color.Purple);
-                // return true;
-                stopAT = descryptedRaw.Length;
-            }
-            byte[] str = MiscUtils.subArray(descryptedRaw, first_at, stopAT - first_at);
-            string asciiString;
-            // There is still some kind of Tuya paging here,
-            // let's skip it in a quick and dirty way
-#if false
-            str = MiscUtils.stripBinary(str);
-            asciiString = Encoding.ASCII.GetString(str);
-#else
-            asciiString = "";
-            for(int i = 0; i < str.Length; i++)
-            {
-                byte b = str[i];
-                if (b < 32)
-                    continue;
-                if (b > 127)
-                    continue;
-                char ch = (char)b;
-                asciiString += ch;
-            }
-#endif
-            string[] pairs = asciiString.Split(new char[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
-            for(int i = 0; i < pairs.Length; i++)
-            {
-                string []kp = pairs[i].Split(new char[] { ':' }, StringSplitOptions.RemoveEmptyEntries);
-                if(kp.Length < 2)
-                {
-                    FormMain.Singleton.addLog("Malformed key? " + Environment.NewLine, System.Drawing.Color.Orange);
 
-                    continue;
-                }
-                string skey = kp[0];
-                string svalue = kp[kp.Length - 1];
-                skey = skey.Trim(new char[] { '"' }).Replace("\"", "");
-                svalue = svalue.Trim(new char[] { '"' }).Replace("\"", "").Replace("}", "");
-                //parms.Add(skey, svalue);
-                if (findKeyValue(skey) == null)
+                if (keys_at < descryptedRaw.Length)
                 {
-                    KeyValue kv = new KeyValue(skey, svalue);
-                    parms.Add(kv);
+                    keys_at++;
+                    first_at = keys_at;
                 }
             }
-            FormMain.Singleton.addLog("Tuya keys extraction has found " + parms.Count + " keys" + Environment.NewLine, System.Drawing.Color.Black);
-
-            return false;
         }
+        else
+        {
+            // We had Jsonver and backed up to '{'
+            first_at = keys_at + 1;
+        }
+    }
+    else
+    {
+        // We found "user_param_key" – move forward to the JSON '{'
+        while (keys_at < descryptedRaw.Length && descryptedRaw[keys_at] != '{')
+            keys_at++;
+
+        if (keys_at < descryptedRaw.Length)
+        {
+            keys_at++;
+            first_at = keys_at;
+        }
+    }
+
+    int stopAT;
+    if (useFullBuffer)
+    {
+        // Relaxed: use the entire decrypted buffer
+        stopAT = descryptedRaw.Length;
+    }
+    else
+    {
+        // Try to find matching closing brace
+        stopAT = MiscUtils.findMatching(descryptedRaw, (byte)'}', (byte)'{', first_at);
+        if (stopAT == -1)
+        {
+            // Relaxed: if matching '}' not found, just go to the end
+            FormMain.Singleton.addLog(
+                "Failed to find matching JSON end, using rest of buffer instead"
+                + Environment.NewLine, System.Drawing.Color.Orange);
+
+            stopAT = descryptedRaw.Length;
+        }
+    }
+
+    if (stopAT <= first_at || first_at >= descryptedRaw.Length)
+    {
+        // Nothing sensible to parse, but don't treat as hard failure
+        FormMain.Singleton.addLog(
+            "Tuya keys extraction: nothing to parse in decrypted buffer (relaxed mode)"
+            + Environment.NewLine, System.Drawing.Color.Orange);
+
+        return false; // relaxed: still "success" from caller POV
+    }
+
+    byte[] str = MiscUtils.subArray(descryptedRaw, first_at, stopAT - first_at);
+    string asciiString;
+
+    // There is still some kind of Tuya paging here,
+    // let's skip it in a quick and dirty way
+#if false
+    str = MiscUtils.stripBinary(str);
+    asciiString = Encoding.ASCII.GetString(str);
+#else
+    asciiString = "";
+    for (int i = 0; i < str.Length; i++)
+    {
+        byte b = str[i];
+        if (b < 32)
+            continue;
+        if (b > 127)
+            continue;
+        char ch = (char)b;
+        asciiString += ch;
+    }
+#endif
+
+    string[] pairs = asciiString.Split(new char[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
+    for (int i = 0; i < pairs.Length; i++)
+    {
+        string[] kp = pairs[i].Split(new char[] { ':' }, StringSplitOptions.RemoveEmptyEntries);
+        if (kp.Length < 2)
+        {
+            // Malformed pair; skip but don't abort
+            FormMain.Singleton.addLog(
+                "Malformed key/value segment while extracting Tuya keys (relaxed mode)"
+                + Environment.NewLine, System.Drawing.Color.Orange);
+            continue;
+        }
+
+        string skey = kp[0];
+        string svalue = kp[kp.Length - 1];
+
+        skey = skey.Trim().Trim('"').Replace("\"", "");
+        svalue = svalue.Trim().Trim('"').Replace("\"", "").Replace("}", "");
+
+        if (findKeyValue(skey) == null)
+        {
+            KeyValue kv = new KeyValue(skey, svalue);
+            parms.Add(kv);
+        }
+    }
+
+    FormMain.Singleton.addLog(
+        "Tuya keys extraction has found " + parms.Count + " keys"
+        + Environment.NewLine, System.Drawing.Color.Black);
+
+    // RELAXED: never signal "hard failure" to the caller
+    return false;
+}
+
         KeyValue findKeyContaining(string key)
         {
             for (int i = 0; i < parms.Count; i++)
