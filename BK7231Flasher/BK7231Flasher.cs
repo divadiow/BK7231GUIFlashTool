@@ -1002,7 +1002,9 @@ namespace BK7231Flasher
             addLog("Flash information: " + flashInfo.ToString() + Environment.NewLine);
             FLASH_SIZE = flashInfo.szMem;
             TOTAL_SECTORS = FLASH_SIZE / SECTOR_SIZE;
-            addLog("Flash size is " + FLASH_SIZE / 1024 / 1024 + "MB" + Environment.NewLine);
+            addLog("Flash size is " + FLASH_SIZE / 1024 / 1024 + "MB (from MID)" + Environment.NewLine);
+
+
             if (setProtectState(true))
             {
                 return false;
@@ -1310,15 +1312,10 @@ namespace BK7231Flasher
             {
                 int addr = startSector + step * i;
                 addLog("Reading " + formatHex(addr) + "... ");
-                // BK7231T does not allow bootloader read, but we can use a wrap-around hack
-                if(chipType == BKType.BK7231T || chipType == BKType.BK7231U)
+                // BK7231T/BK7231U/BK7252 do not allow direct bootloader read, use wrap-around
+                if (chipType == BKType.BK7231T || chipType == BKType.BK7231U || chipType == BKType.BK7252)
                 {
                     addr += FLASH_SIZE;
-                }
-                else
-                {
-                    // wrap-around breaks stuff here, maybe it has 4MB flash?
-                    //addr += 0x400000;// not working for BK7252 as well
                 }
                 bool bOk = readSectorTo(addr, tempResult);
                 if (bOk == false)
@@ -1424,16 +1421,29 @@ namespace BK7231Flasher
             {
                 return false;
             }
-            // hack
-            int realStart = 0;
-            int realLen = TOTAL_SECTORS;
-            if(chipType == BKType.BK7252)
+            if (chipType == BKType.BK7252)
             {
-                realStart = 0x11000;
-                realLen = TOTAL_SECTORS - (0x11000 / 0x1000);
+                int detectedSize = DetectRealFlashSize();
+                if (detectedSize > 0 && detectedSize != FLASH_SIZE)
+                {
+                    FLASH_SIZE = detectedSize;
+                    TOTAL_SECTORS = FLASH_SIZE / SECTOR_SIZE;
+                    addLog("BK7252: adjusted flash size using wrap-around detection to " + (FLASH_SIZE / 1024 / 1024) + "MB" + Environment.NewLine);
+                }
             }
+            // backup range
+            int realStart = startSector;
+            int realLen = sectors;
             if (rwMode == WriteMode.ReadAndWrite)
             {
+                // For BK7252, always back up the full detected flash from 0x00000,
+                // using the dynamically detected flash size and wrap-around logic.
+                if (chipType == BKType.BK7252)
+                {
+                    realStart = 0;
+                    realLen = TOTAL_SECTORS;
+                    addLog("BK7252: backing up full flash (" + (FLASH_SIZE / 1024 / 1024) + "MB) from 0x00000" + Environment.NewLine);
+                }
                 //ms = readChunk(startSector, sectors);
                 ms = readChunk(realStart, realLen);
                 if (ms == null)
@@ -1518,24 +1528,60 @@ namespace BK7231Flasher
         }
         void doReadInternal(int startSector = 0x000, int sectors = 10, bool fullRead = false)
         {
-            logger.setProgress(0, sectors);
-            addLog(Environment.NewLine + "Starting read!" + Environment.NewLine);
-            addLog("Read parms: start 0x"+
-                (startSector ).ToString("X2")
-                + " (sector " + startSector / BK7231Flasher.SECTOR_SIZE + "), len 0x" +
-                (sectors * BK7231Flasher.SECTOR_SIZE).ToString("X2")
-                + " (" + startSector + " sectors)"
-                + Environment.NewLine);
+            // Ensure generic setup and baud rate etc. are done first
             if (doGenericSetup() == false)
             {
                 return;
             }
-            if(fullRead)
-                sectors = TOTAL_SECTORS; 
+
+            // For BK7252, refine flash size using wrap-around detection and
+            // force full-read to start logically at 0x00000. We still use
+            // wrap-around inside readChunk() for actual physical addresses.
+            if (chipType == BKType.BK7252)
+            {
+                int detectedSize = DetectRealFlashSize();
+                if (detectedSize > 0 && detectedSize != FLASH_SIZE)
+                {
+                    FLASH_SIZE = detectedSize;
+                    TOTAL_SECTORS = FLASH_SIZE / SECTOR_SIZE;
+                    addLog("BK7252: adjusted flash size using wrap-around detection to " + (FLASH_SIZE / 1024 / 1024) + "MB" + Environment.NewLine);
+                }
+
+                if (fullRead)
+                {
+                    // Always present a logical start of 0x00000 for full dumps
+                    if (startSector != 0)
+                    {
+                        addLog("BK7252: overriding requested full-read start 0x" +
+                            startSector.ToString("X2") +
+                            " to 0x00000 (logical), bootloader will be read via wrap-around." +
+                            Environment.NewLine);
+                    }
+                    startSector = 0;
+                }
+            }
+
+            if (fullRead)
+            {
+                sectors = TOTAL_SECTORS;
+            }
+
+            logger.setProgress(0, sectors);
+            addLog(Environment.NewLine + "Starting read!" + Environment.NewLine);
+            addLog("Read parms: start 0x" +
+                startSector.ToString("X2") +
+                " (sector " + (startSector / BK7231Flasher.SECTOR_SIZE) + "), len 0x" +
+                (sectors * BK7231Flasher.SECTOR_SIZE).ToString("X2") +
+                " (" + sectors + " sectors)" +
+                Environment.NewLine);
+
             ms = readChunk(startSector, sectors);
-            // reset flash size
+
+            // Reset FLASH_SIZE back to default 2MB for safety, so any
+            // subsequent operations that assume the legacy value still behave.
             FLASH_SIZE = 0x200000;
             TOTAL_SECTORS = FLASH_SIZE / SECTOR_SIZE;
+
             if (ms == null)
             {
                 return;
@@ -1552,6 +1598,62 @@ namespace BK7231Flasher
                 return true;
             }
             return false;
+        }
+
+        bool readSectorRaw(int addr, byte[] buffer)
+        {
+            // Read a single 4K sector payload (without protocol header)
+            byte[] res = readSector(addr);
+            if (res == null)
+            {
+                return false;
+            }
+            int start_ofs = 15;
+            int payloadLen = res.Length - start_ofs;
+            if (payloadLen < buffer.Length)
+            {
+                addError("readSectorRaw: payload too small (" + payloadLen + " bytes, expected at least " + buffer.Length + ")." + Environment.NewLine);
+                return false;
+            }
+            Array.Copy(res, start_ofs, buffer, 0, buffer.Length);
+            return true;
+        }
+
+        int DetectRealFlashSize()
+        {
+            // Detect real flash size by checking for data wrap-around at safe offsets,
+            // similar to ltchiptool's BK7252 implementation.
+            int safeOffset = BOOTLOADER_SIZE; // 0x11000 - just past bootloader
+            byte[] baseSector = new byte[SECTOR_SIZE];
+            if (!readSectorRaw(safeOffset, baseSector))
+            {
+                addWarning("Flash size detection: failed to read base sector at " + formatHex(safeOffset) + ", using MID-reported size." + Environment.NewLine);
+                return FLASH_SIZE;
+            }
+
+            int[] sizesMiB = new int[] { 2, 4, 8, 16 };
+            foreach (int sizeMiB in sizesMiB)
+            {
+                int sizeBytes = sizeMiB * 0x100000;
+                int addr = sizeBytes + safeOffset;
+                addLog("Flash size detection: checking wrap-around at " + formatHex(addr) + Environment.NewLine);
+
+                byte[] probeSector = new byte[SECTOR_SIZE];
+                if (!readSectorRaw(addr, probeSector))
+                {
+                    addWarning("Flash size detection: read failed at " + formatHex(addr) + ", skipping this candidate size." + Environment.NewLine);
+                    continue;
+                }
+
+                if (probeSector.SequenceEqual(baseSector))
+                {
+                    addLog("Flash size detection: wrap-around detected at " + formatHex(addr) + " -> flash size = " + (sizeBytes / 1024 / 1024) + "MB" + Environment.NewLine);
+                    return sizeBytes;
+                }
+            }
+
+            addWarning("Flash size detection: no wrap-around detected, keeping MID-reported size of " + (FLASH_SIZE / 1024 / 1024) + "MB" + Environment.NewLine);
+            return FLASH_SIZE;
         }
         int CalcRxLength_FlashWrite4K()
         {

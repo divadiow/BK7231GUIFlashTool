@@ -1,5 +1,4 @@
-﻿
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
@@ -147,7 +146,7 @@ namespace BK7231Flasher
 
             }
 #endif
-            
+
 
             //  var t = new TuyaConfig();
             //  t.fromFile("W:/GIT/BK7231GUIFlashTool/BK7231Flasher/bin/Release/backups/CBU_2Gang_8046/readResult_BK7231N_QIO_2023-05-5--13-40-02.bin");
@@ -212,7 +211,7 @@ namespace BK7231Flasher
             comboBoxChipType.Items.Add(new ChipType(BKType.GenericSPI, "Generic SPI CH341"));
 
             comboBoxChipType.SelectedIndex = 0;
-            
+
             comboBoxBaudRate.Items.Add(115200);
             comboBoxBaudRate.Items.Add(230400);
             comboBoxBaudRate.Items.Add(460800);
@@ -485,7 +484,7 @@ namespace BK7231Flasher
                 flasher = null;
             }
         }
-        
+
         void createFlasher()
         {
             switch(curType)
@@ -533,7 +532,7 @@ namespace BK7231Flasher
             flasher.setSkipKeyCheck(checkBoxSkipKeyCheck.Checked);
             flasher.setIgnoreCRCErr(chkIgnoreCRCErr.Checked);
         }
-        
+
         void testWrite()
         {
             clearUp();
@@ -779,21 +778,23 @@ namespace BK7231Flasher
                 sectors = parms.len / BK7231Flasher.SECTOR_SIZE;
                 isFullRead = false;
             }
-            else if(curType == BKType.BK7252)
-            {
-                startSector = 0x11000;
-                sectors = getBackupSectorCountForCurrentPlatform() - (startSector/ BK7231Flasher.SECTOR_SIZE);
-                addLog("^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*" + Environment.NewLine, Color.DarkOrange);
-                addLog("BK7252 mode - read offset is 0x11000, we can't access bootloader." + Environment.NewLine, Color.DarkOrange);
-                addLog("^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*" + Environment.NewLine, Color.DarkOrange);
-            }
             else
             {
-                startSector = 0x0;// getBackupStartSectorForCurrentPlatform();
+                // Full-chip backup path.
+                // For BK7252 we now always start at logical 0x00000 and let the flasher
+                // handle wrap-around and size detection, so the dump looks like BK7231T/U.
+                startSector = 0x0;
                 sectors = getBackupSectorCountForCurrentPlatform();
+
+                if(curType == BKType.BK7252)
+                {
+                    addLog("^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*" + Environment.NewLine, Color.DarkOrange);
+                    addLog("BK7252 mode - full backup from logical 0x00000 using wrap-around; bootloader is read via mirror and remains write-protected." + Environment.NewLine, Color.DarkOrange);
+                    addLog("^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*" + Environment.NewLine, Color.DarkOrange);
+                }
             }
             flasher.doRead(startSector, sectors, isFullRead);
-            
+
             flasher.saveReadResult(startSector);
 
             worker = null;
@@ -1269,7 +1270,7 @@ namespace BK7231Flasher
             buttonCustomOperation.Visible = b;
             chkIgnoreCRCErr.Visible = b;
         }
-        
+
         private void buttonOpenBackupsDir_Click(object sender, EventArgs e)
         {
             try
@@ -1372,7 +1373,7 @@ namespace BK7231Flasher
                 return;
             }
             //setButtonReadLabel(label_stopRead);
-            startWorkerThread(doOnlyFlashOBKConfig);
+            startWorkerThread(doOnlyReadOBKConfig);
         }
 
         private void buttonReadOBKConfig_Click(object sender, EventArgs e)
@@ -1403,7 +1404,7 @@ namespace BK7231Flasher
             }
             startWorkerThread(readThread, customRead);
         }
-        
+
         void startWorkerThread(Action<object> ts, object customArg)
         {
             cts?.Dispose();
@@ -1475,7 +1476,7 @@ namespace BK7231Flasher
                     };
                     contextMenu.Items.Add(toggleMenuItem);
                 }
-                
+
                 if(dev.hasDimmerSupport())
                 {
                     ToolStripMenuItem dimmerToolsMenuItem = new ToolStripMenuItem("Dimmer");
