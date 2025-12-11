@@ -1373,7 +1373,7 @@ namespace BK7231Flasher
                 return;
             }
             //setButtonReadLabel(label_stopRead);
-            startWorkerThread(doOnlyReadOBKConfig);
+            startWorkerThread(doOnlyFlashOBKConfig);
         }
 
         private void buttonReadOBKConfig_Click(object sender, EventArgs e)
