@@ -24,6 +24,30 @@ namespace BK7231Flasher
         FormCustom formCustom;
         CancellationTokenSource cts;
 
+        public Dictionary<BKType, string> Chips = new Dictionary<BKType, string>()
+        {
+            { BKType.BK7231T,    "BK7231T" },
+            { BKType.BK7231U,    "BK7231U" },
+            { BKType.BK7231N,    "BK7231N (T2, T34)" },
+            { BKType.BK7231M,    "BK7231M" },
+            { BKType.BK7236,     "BK7236 (T3)" },
+            { BKType.BK7238,     "BK7238 (T1)" },
+            { BKType.BK7252,     "BK7252" },
+            { BKType.BK7252N,    "BK7252N (T4)" },
+            { BKType.BK7258,     "BK7258 (T5)" },
+            { BKType.RTL8710B,   "RTL8710B" },
+            { BKType.RTL87X0C,   "RTL87X0C" },
+            { BKType.RTL8720D,   "RTL8720DN" },
+            { BKType.LN882H,     "LN882H" },
+            { BKType.BL602,      "BL602" },
+            { BKType.ECR6600,    "ECR6600" },
+            { BKType.W800,       "W800" },
+            { BKType.W600,       "W600 (write)" },
+            { BKType.RDA5981,    "RDA5981" },
+            { BKType.BekenSPI,   "Beken SPI CH341" },
+            { BKType.GenericSPI, "Generic SPI CH341" },
+        };
+
         public FormMain()
         {
             Singleton = this;
@@ -119,7 +143,7 @@ namespace BK7231Flasher
                 comboBoxFirmware.DropDownStyle = ComboBoxStyle.DropDown;
                 comboBoxFirmware.Text = file;
                 chosenSourceFile = file;
-                addLog("You drag and dropped file " + file + "...",Color.Black);
+                addLog("You dragged and dropped file " + file + "...",Color.Black);
             }
         }
         // string label_startRead = "Start Read Flash (Full backup)";
@@ -188,28 +212,10 @@ namespace BK7231Flasher
             comboBoxUART.DropDownStyle = ComboBoxStyle.DropDownList;
             comboBoxFirmware.DropDownStyle = ComboBoxStyle.DropDownList;
 
-            comboBoxChipType.Items.Add(new ChipType(BKType.BK7231T, "BK7231T"));
-            comboBoxChipType.Items.Add(new ChipType(BKType.BK7231U, "BK7231U"));
-            comboBoxChipType.Items.Add(new ChipType(BKType.BK7231N, "BK7231N (T2)"));
-            comboBoxChipType.Items.Add(new ChipType(BKType.BK7231M, "BK7231M"));
-            comboBoxChipType.Items.Add(new ChipType(BKType.BK7236, "BK7236 (T3)"));
-            comboBoxChipType.Items.Add(new ChipType(BKType.BK7238, "BK7238 (T1)"));
-            comboBoxChipType.Items.Add(new ChipType(BKType.BK7252, "BK7252"));
-            comboBoxChipType.Items.Add(new ChipType(BKType.BK7252N, "BK7252N (T4)"));
-            comboBoxChipType.Items.Add(new ChipType(BKType.BK7258, "BK7258 (T5)"));
-            comboBoxChipType.Items.Add(new ChipType(BKType.RTL8710B, "RTL8710B"));
-            comboBoxChipType.Items.Add(new ChipType(BKType.RTL87X0C, "RTL87X0C"));
-            comboBoxChipType.Items.Add(new ChipType(BKType.RTL8720D, "RTL8720DN"));
-            //comboBoxChipType.Items.Add(new ChipType(BKType.RTL8721DA, "RTL8721DA"));
-            //comboBoxChipType.Items.Add(new ChipType(BKType.RTL8720E, "RTL8720E"));
-            comboBoxChipType.Items.Add(new ChipType(BKType.LN882H, "LN882H"));
-            comboBoxChipType.Items.Add(new ChipType(BKType.BL602, "BL602"));
-            comboBoxChipType.Items.Add(new ChipType(BKType.ECR6600, "ECR6600"));
-            comboBoxChipType.Items.Add(new ChipType(BKType.W800, "W800"));
-            comboBoxChipType.Items.Add(new ChipType(BKType.W600, "W600 (write)"));
-            comboBoxChipType.Items.Add(new ChipType(BKType.RDA5981, "RDA5981"));
-            comboBoxChipType.Items.Add(new ChipType(BKType.BekenSPI, "Beken SPI CH341"));
-            comboBoxChipType.Items.Add(new ChipType(BKType.GenericSPI, "Generic SPI CH341"));
+            foreach(var chip in Chips)
+            {
+                comboBoxChipType.Items.Add(new ChipType(chip.Key, chip.Value));
+            }
 
             comboBoxChipType.SelectedIndex = 0;
             
@@ -768,7 +774,7 @@ namespace BK7231Flasher
             clearUp();
             createFlasher();
             flasher.setBackupName(lastBackupNameEnteredByUser);
-            // thanks to wrap around hack, we can read from start correctly
+            // thanks to wrap-around hack, we can read from start correctly
             int startSector;
             int sectors;
             if (parms!= null)
@@ -835,7 +841,7 @@ namespace BK7231Flasher
         {
             clearUp();
             createFlasher();
-            // thanks to wrap around hack, we can read from start correctly
+            // thanks to wrap-around hack, we can read from start correctly
             int startSector = OBKFlashLayout.getConfigLocation(curType, out var sectors);
 
             if(curType == BKType.RTL8720D || curType == BKType.RTL87X0C || curType == BKType.RTL8710B)
@@ -855,7 +861,7 @@ namespace BK7231Flasher
             else
             {
                 addLog("OBK config loaded. You can now view it by clicking 'Change OBK settings' button."+Environment.NewLine, Color.Black);
-                addLog("You can also edit it whatever you want." + Environment.NewLine, Color.Black);
+                addLog("You can also edit it however you want." + Environment.NewLine, Color.Black);
                 addLog("You can also use 'Write OBK config' button to write it back with your changes." + Environment.NewLine, Color.Black);
             }
             worker = null;
@@ -964,7 +970,7 @@ namespace BK7231Flasher
             }
             else
             {
-                addLog("Backup created, now will attempt to extract Tuya config." + Environment.NewLine, Color.Gray);
+                addLog("Backup created, will now attempt to extract Tuya config." + Environment.NewLine, Color.Gray);
                 try
                 {
                     TuyaConfig tc = new TuyaConfig();
@@ -1087,7 +1093,7 @@ namespace BK7231Flasher
         private void buttonDownloadLatest_Click(object sender, EventArgs e)
         {
             refreshType();
-            var res = MessageBox.Show("Do you want to automatically download latest release from WWW?", 
+            var res = MessageBox.Show("Do you want to automatically download latest release?", 
                 "Download?", MessageBoxButtons.YesNo);
             if (res == DialogResult.Yes)
             {
@@ -1286,7 +1292,7 @@ namespace BK7231Flasher
 
         private void buttonClearOldFirmware_Click(object sender, EventArgs e)
         {
-            var res = MessageBox.Show("Do you want to clear all downloaded firwmares? ", "Remove old firmware files", MessageBoxButtons.YesNo);
+            var res = MessageBox.Show("Do you want to clear all downloaded firmware files? ", "Remove old firmware files", MessageBoxButtons.YesNo);
             if (res == DialogResult.Yes)
             {
                 clearFirmwaresList();
@@ -1314,7 +1320,7 @@ namespace BK7231Flasher
         {
             var res = MessageBox.Show("This will remove everything from 0x11000, including configuration of OBK and MAC address and RF partition. "+
                 "You will need to do 'Restore RF partition' in OBK Web Application/Flash tab to get correct MAC. "+
-                "Do it if you have RF issues. Flash OBK after doing erase. This option might require lower bauds. ", "WARNING! NUKE CHIP?", MessageBoxButtons.YesNo);
+                "Do it if you have RF issues. Flash OBK after doing erase. This option might require a lower baud rate. ", "WARNING! NUKE CHIP?", MessageBoxButtons.YesNo);
             if (res == DialogResult.Yes)
             {
                 if (doGenericOperationPreparations() == false)
@@ -1606,7 +1612,7 @@ namespace BK7231Flasher
             try
             {
                 // opens the folder in explorer
-                string path = Path.Combine(Directory.GetCurrentDirectory(), OBKMassBackup.DEFAULT_BASE_DIR);
+                string path = Path.Combine(Directory.GetCurrentDirectory(), backupsPath);
                 Process.Start("explorer.exe", path);
             }
             catch (Exception ex)
@@ -1617,14 +1623,43 @@ namespace BK7231Flasher
 
         private void buttonTuyaConfig_CopyJSONToClipBoard_Click(object sender, EventArgs e)
         {
-            Clipboard.SetText(textBoxTuyaCFGJSON.Text);
+            string text = textBoxTuyaCFGJSON?.Text;
+            if (string.IsNullOrEmpty(text))
+            {
+                MessageBox.Show("No JSON text available to copy.", "Copy to clipboard", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            else
+            {
+                try
+                {
+                    Clipboard.SetText(text);
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show("Failed to copy to clipboard: " + ex.Message, "Clipboard error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+            }
         }
 
         private void buttonTuyaConfig_CopyTextToClipBoard_Click(object sender, EventArgs e)
         {
-            Clipboard.SetText(textBoxTuyaCFGText.Text);
+            string text = textBoxTuyaCFGText?.Text;
+            if (string.IsNullOrEmpty(text))
+            {
+                MessageBox.Show("No text description available to copy.", "Copy to clipboard", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            else
+            {
+                try
+                {
+                    Clipboard.SetText(text);
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show("Failed to copy to clipboard: " + ex.Message, "Clipboard error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+            }
         }
-
         private void linkLabel5_LinkClicked(object sender, LinkLabelLinkClickedEventArgs e)
         {
             System.Diagnostics.Process.Start("https://www.youtube.com/watch?v=WunlqIMAdgw");
@@ -1639,7 +1674,7 @@ namespace BK7231Flasher
         {
             if(checkBoxOverwriteBootloader.Checked == true)
             {
-                DialogResult res = MessageBox.Show("This will break bootloader if used incorrectly, do you have a backup? Are you sure?",
+                DialogResult res = MessageBox.Show("This will break bootloader if used incorrectly. Do you have a backup? Are you sure?",
                     "Are you sure?", MessageBoxButtons.YesNo);
                 if(res == DialogResult.No)
                 {
