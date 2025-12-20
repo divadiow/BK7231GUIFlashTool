@@ -48,10 +48,111 @@ namespace BK7231Flasher
             { BKType.GenericSPI, "Generic SPI CH341" },
         };
 
+        // Per-platform guide links (shown in the main log window on platform selection).
+        //
+        // Notes:
+        // - RichTextBox auto-detects URLs and renders them as clickable links when DetectUrls is enabled.
+        // - The LinkClicked handler below opens the link using the OS default browser.
+        // - Populate the lists as you see fit; unconfigured platforms simply show a "No guides" hint.
+        private sealed class GuideLink
+        {
+            public string Label;
+            public string Url;
+
+            public GuideLink(string label, string url)
+            {
+                Label = label;
+                Url = url;
+            }
+        }
+
+        private static readonly Dictionary<BKType, List<GuideLink>> FlashingGuides =
+            new Dictionary<BKType, List<GuideLink>>()
+        {
+            // TODO: Add your platform guide links here.
+            // Example:
+            // { BKType.LN882H, new List<GuideLink> { new GuideLink("My guide", "https://example") } },
+        { BKType.BK7231T,    new List<GuideLink>() {
+            new GuideLink("Official flashing instructions (BK7231T/BK7231N)", "https://github.com/openshwprojects/OpenBK7231T_App/blob/main/FLASHING.md"),
+            new GuideLink("Official documentation index", "https://github.com/openshwprojects/OpenBK7231T_App/blob/main/docs/README.md"),
+            new GuideLink("Home Assistant community flashing guide", "https://community.home-assistant.io/t/detailed-guide-on-how-to-flash-the-new-tuya-beken-chips-with-openbk7231t/437276"),
+            new GuideLink("Device/teardown/flashing reports database", "https://openbekeniot.github.io/webapp/devicesList.html"),
+        } },
+        { BKType.BK7231U,    new List<GuideLink>() {
+            new GuideLink("Official documentation index", "https://github.com/openshwprojects/OpenBK7231T_App/blob/main/docs/README.md"),
+            new GuideLink("Device/teardown/flashing reports database", "https://openbekeniot.github.io/webapp/devicesList.html"),
+        } },
+        { BKType.BK7231N,    new List<GuideLink>() {
+            new GuideLink("Official flashing instructions (BK7231T/BK7231N)", "https://github.com/openshwprojects/OpenBK7231T_App/blob/main/FLASHING.md"),
+            new GuideLink("Official documentation index", "https://github.com/openshwprojects/OpenBK7231T_App/blob/main/docs/README.md"),
+            new GuideLink("Home Assistant community flashing guide", "https://community.home-assistant.io/t/detailed-guide-on-how-to-flash-the-new-tuya-beken-chips-with-openbk7231t/437276"),
+            new GuideLink("Device/teardown/flashing reports database", "https://openbekeniot.github.io/webapp/devicesList.html"),
+        } },
+        { BKType.BK7231M,    new List<GuideLink>() {
+            new GuideLink("Official documentation index", "https://github.com/openshwprojects/OpenBK7231T_App/blob/main/docs/README.md"),
+        } },
+        { BKType.BK7236,     new List<GuideLink>() {
+            new GuideLink("Official documentation index", "https://github.com/openshwprojects/OpenBK7231T_App/blob/main/docs/README.md"),
+        } },
+        { BKType.BK7238,     new List<GuideLink>() {
+            new GuideLink("Official documentation index", "https://github.com/openshwprojects/OpenBK7231T_App/blob/main/docs/README.md"),
+        } },
+        { BKType.BK7252,     new List<GuideLink>() {
+            new GuideLink("Official documentation index", "https://github.com/openshwprojects/OpenBK7231T_App/blob/main/docs/README.md"),
+        } },
+        { BKType.BK7252N,    new List<GuideLink>() {
+            new GuideLink("Official documentation index", "https://github.com/openshwprojects/OpenBK7231T_App/blob/main/docs/README.md"),
+        } },
+        { BKType.BK7258,     new List<GuideLink>() {
+            new GuideLink("Official documentation index", "https://github.com/openshwprojects/OpenBK7231T_App/blob/main/docs/README.md"),
+        } },
+        { BKType.RTL8710B,   new List<GuideLink>() {
+            new GuideLink("Official documentation index", "https://github.com/openshwprojects/OpenBK7231T_App/blob/main/docs/README.md"),
+        } },
+        { BKType.RTL87X0C,   new List<GuideLink>() {
+            new GuideLink("Official documentation index", "https://github.com/openshwprojects/OpenBK7231T_App/blob/main/docs/README.md"),
+        } },
+        { BKType.RTL8720D,   new List<GuideLink>() {
+            new GuideLink("Official documentation index", "https://github.com/openshwprojects/OpenBK7231T_App/blob/main/docs/README.md"),
+        } },
+        { BKType.LN882H,     new List<GuideLink>() {
+            new GuideLink("LN882H UART flashing guide (Elektroda)", "https://www.elektroda.com/rtvforum/topic4028087.html"),
+            new GuideLink("Device/teardown/flashing reports database", "https://openbekeniot.github.io/webapp/devicesList.html"),
+        } },
+        { BKType.BL602,      new List<GuideLink>() {
+            new GuideLink("Flash BL602 over Wi-Fi without soldering (Elektroda)", "https://www.elektroda.com/rtvforum/topic4050297.html"),
+            new GuideLink("Device/teardown/flashing reports database", "https://openbekeniot.github.io/webapp/devicesList.html"),
+        } },
+        { BKType.ECR6600,    new List<GuideLink>() {
+            new GuideLink("ECR6600 UART flashing walkthrough (Elektroda)", "https://www.elektroda.com/news/news4112667.html"),
+        } },
+        { BKType.W800,       new List<GuideLink>() {
+            new GuideLink("W800 flashing & programming guide (Elektroda)", "https://www.elektroda.com/rtvforum/topic3905652.html"),
+            new GuideLink("Device/teardown/flashing reports database", "https://openbekeniot.github.io/webapp/devicesList.html"),
+        } },
+        { BKType.W600,       new List<GuideLink>() {
+            new GuideLink("W600 flashing guide (Elektroda)", "https://www.elektroda.com/rtvforum/topic4010598.html"),
+            new GuideLink("Device/teardown/flashing reports database", "https://openbekeniot.github.io/webapp/devicesList.html"),
+        } },
+        { BKType.RDA5981,    new List<GuideLink>() {
+            new GuideLink("Official documentation index", "https://github.com/openshwprojects/OpenBK7231T_App/blob/main/docs/README.md"),
+        } },
+        { BKType.BekenSPI,   new List<GuideLink>() {
+            new GuideLink("BK7231/BK7252 SPI flashing & recovery (Elektroda)", "https://www.elektroda.com/rtvforum/topic4147664.html"),
+        } },
+        { BKType.GenericSPI, new List<GuideLink>() {
+            new GuideLink("BK7231/BK7252 SPI flashing & recovery (Elektroda)", "https://www.elektroda.com/rtvforum/topic4147664.html"),
+        } },
+
+        };
+
         public FormMain()
         {
             Singleton = this;
             InitializeComponent();
+
+            textBoxLog.DetectUrls = true;
+            textBoxLog.LinkClicked += textBoxLog_LinkClicked;
 
         }
         public string getFirmwareDir()
@@ -384,6 +485,55 @@ namespace BK7231Flasher
                 // Running on the UI thread
                 RichTextUtil.AppendText(Singleton.textBoxLog, s, col);
             });
+        }
+        private void addLogLine(string s)
+        {
+            addLog(s + "\r\n", Color.Black);
+        }
+
+        private void addLogLine(string format, params object[] args)
+        {
+            addLogLine(string.Format(format, args));
+        }
+
+        private void appendPlatformGuidesToLog(BKType type, string platformDisplayName)
+        {
+            addLogLine("------------------------------------------------------------");
+            addLogLine("Flashing guides and related resources relating to {0}", platformDisplayName);
+
+            List<GuideLink> links;
+            if (!FlashingGuides.TryGetValue(type, out links) || links == null || links.Count == 0)
+            {
+                addLogLine("(No guides configured for this platform yet.)");
+                return;
+            }
+
+            for (int i = 0; i < links.Count; i++)
+            {
+                var gl = links[i];
+                if (gl == null) continue;
+                if (!string.IsNullOrWhiteSpace(gl.Label))
+                {
+                    addLogLine("- {0}: {1}", gl.Label, gl.Url);
+                }
+                else
+                {
+                    addLogLine(gl.Url);
+                }
+            }
+        }
+
+        private void textBoxLog_LinkClicked(object sender, LinkClickedEventArgs e)
+        {
+            try
+            {
+                // UseShellExecute=true is required on modern .NET to open URLs reliably.
+                Process.Start(new ProcessStartInfo(e.LinkText) { UseShellExecute = true });
+            }
+            catch
+            {
+                // Intentionally ignore failures; this is a convenience feature.
+            }
         }
         //public void setButtonReadLabel(string s)
         //{
@@ -1088,6 +1238,12 @@ namespace BK7231Flasher
             refreshType();
             refreshFirmwaresList();
             setSettingsKeyAndSave("Platform", comboBoxChipType.SelectedItem);
+
+            // Print platform-specific flashing guides in the main log window.
+            if (bWithinSettingSet == false && comboBoxChipType.SelectedItem != null)
+            {
+                appendPlatformGuidesToLog(curType, comboBoxChipType.SelectedItem.ToString());
+            }
         }
 
         private void buttonDownloadLatest_Click(object sender, EventArgs e)
