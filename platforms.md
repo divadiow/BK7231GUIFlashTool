@@ -18,10 +18,17 @@
 | BL702 | ✅ | ✅ | ✅⁸ | ❌¹⁴ | ➖ | ⚠️²⁰ | ❌ | ✅²⁴ |
 | ECR6600 | ✅ | ✅ | ✅⁸ | ✅ | ➖ | ✅ | ❌ | ✅²⁴ |
 | W800 | ✅ | ✅⁴ | ❌¹¹ | ✅¹⁵ | ➖ | ⚠️²¹ | ❌ | ✅²⁴ |
-| W600 (write) | ❌² | ✅⁴ | ❌¹¹ | ⚠️¹⁶ | ➖ | ❌²² | ❌ | ⚠️²⁴ |
+| W600 | ❌² | ✅⁴ | ❌¹¹ | ⚠️¹⁶ | ➖ | ❌²² | ❌ | ⚠️²⁴ |
 | RDA5981 | ✅ | ✅⁵ | ✅⁸ | ✅ | ➖ | ⚠️⁵ | ❌ | ✅²⁴ |
-| Beken SPI CH341 | ✅ | ✅⁴ | ⚠️¹² | ❌ | ❌ | ❌²³ | ❌ | ⚠️²⁴ |
-| Generic SPI CH341 | ✅ | ✅⁴ | ⚠️¹² | ❌ | ❌ | ❌²³ | ❌ | ⚠️²⁴ |
+| Beken SPI | ✅ | ✅⁴ | ⚠️¹² | ❌ | ❌ | ❌²³ | ❌ | ⚠️²⁴ |
+| Generic SPI | ✅ | ✅⁴ | ⚠️¹² | ❌ | ❌ | ❌²³ | ❌ | ⚠️²⁴ |
+
+✅ - Works  
+❓ - Not tested  
+❌ - Not implemented  
+❗️ - Broken<  
+⚠️ - Warning  
+➖ - Not applicable  
 
 ¹ BK7252 read operations are performed from **0x11000** (tool warns that bootloader is not accessible). Custom operations that target the bootloader area are therefore limited/unsupported.  
 ² W600 read is explicitly disabled (“W600 doesn't support read. Use JLink for firmware backup.”).  
@@ -46,8 +53,3 @@
 ²³ SPI CH341: custom operations are not supported (custom UI uses byte offsets, SPI backend expects sector indices).  
 ²⁴ Tuya config extraction is best-effort on the produced dump (or a dragged-in dump). Some helpers (e.g., MAC extraction from RF offsets) assume the dump is **0-based**; if a dump begins at a non-zero flash offset (e.g., BK7252 reads from 0x11000), derived offsets/MAC may be incorrect.  
 ²⁵ BK7236/BK7258: “Erase all” computes its sector count using a **2MB** constant at the UI level, so it does not cover the full flash on larger-flash parts.
-
-✅ - Works  
-⚠️ - Works with caveats/limitations  
-❌ - Not implemented / disabled  
-➖ - Not applicable
