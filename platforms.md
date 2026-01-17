@@ -1,14 +1,14 @@
 | Platform | Read | Write | Erase | OBK config write | RF restore | Custom R/W | RF relocation | Tuya config extraction |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| BK7231T | ✅ | ✅³ | ✅⁷ | ✅ | ✅ | ✅ | ❌ | ✅²⁴ |
-| BK7231U | ✅ | ✅³ | ✅⁷ | ✅ | ✅ | ✅ | ❌ | ✅²⁴ |
-| BK7231N (T2, T34) | ✅ | ✅ | ✅⁷ | ✅ | ✅ | ✅ | ❌ | ✅²⁴ |
-| BK7231M | ✅ | ✅ | ✅⁷ | ✅ | ✅ | ✅ | ❌ | ✅²⁴ |
-| BK7236 (T3) | ✅ | ✅ | ⚠️²⁵ | ❌¹³ | ✅ | ✅ | ❌ | ✅²⁴ |
-| BK7238 (T1) | ✅ | ✅ | ✅⁷ | ✅ | ✅ | ✅ | ❌ | ✅²⁴ |
-| BK7252 | ⚠️¹ | ✅³ | ✅⁷ | ✅ | ✅ | ⚠️¹ | ❌ | ⚠️²⁴ |
-| BK7252N (T4) | ✅ | ✅ | ✅⁷ | ✅ | ✅ | ✅ | ❌ | ✅²⁴ |
-| BK7258 (T5) | ✅ | ✅ | ⚠️²⁵ | ❌¹³ | ✅ | ✅ | ❌ | ✅²⁴ |
+| BK7231T | ✅ | ✅³ | ✅⁷ | ✅ | ✅ | ✅ | ✅²⁶ | ✅²⁴ |
+| BK7231U | ✅ | ✅³ | ✅⁷ | ✅ | ✅ | ✅ | ✅²⁶ | ✅²⁴ |
+| BK7231N (T2, T34) | ✅ | ✅ | ✅⁷ | ✅ | ✅ | ✅ | ✅²⁶ | ✅²⁴ |
+| BK7231M | ✅ | ✅ | ✅⁷ | ✅ | ✅ | ✅ | ✅²⁶ | ✅²⁴ |
+| BK7236 (T3) | ✅ | ✅ | ⚠️²⁵ | ❌¹³ | ✅ | ✅ | ✅²⁶ | ✅²⁴ |
+| BK7238 (T1) | ✅ | ✅ | ✅⁷ | ✅ | ✅ | ✅ | ✅²⁶ | ✅²⁴ |
+| BK7252 | ⚠️¹ | ✅³ | ✅⁷ | ✅ | ✅ | ⚠️¹ | ✅²⁶ | ⚠️²⁴ |
+| BK7252N (T4) | ✅ | ✅ | ✅⁷ | ✅ | ✅ | ✅ | ✅²⁶ | ✅²⁴ |
+| BK7258 (T5) | ✅ | ✅ | ⚠️²⁵ | ❌¹³ | ✅ | ✅ | ✅²⁶ | ✅²⁴ |
 | RTL8710B (AmebaZ) | ✅ | ✅ | ✅⁸ | ✅ | ➖ | ⚠️¹⁸ | ❌ | ✅²⁴ |
 | RTL87X0C (AmebaZ2) | ✅ | ✅ | ❌⁹ | ✅ | ➖ | ⚠️¹⁸ | ❌ | ✅²⁴ |
 | RTL8720DN (AmebaD) | ✅ | ✅ | ✅⁸ | ✅ | ➖ | ⚠️¹⁸ | ❌ | ✅²⁴ |
@@ -53,3 +53,4 @@
 ²³ SPI CH341: custom operations are not supported (custom UI uses byte offsets, SPI backend expects sector indices).  
 ²⁴ Tuya config extraction is best-effort on the produced dump (or a dragged-in dump). Some helpers (e.g., MAC extraction from RF offsets) assume the dump is **0-based**; if a dump begins at a non-zero flash offset (e.g., BK7252 reads from 0x11000), derived offsets/MAC may be incorrect.  
 ²⁵ BK7236/BK7258: “Erase all” computes its sector count using a **2MB** constant at the UI level, so it does not cover the full flash on larger-flash parts.
+²⁶ RF relocation (BK* only): the tool can extract a 4KB RF TLV block from a backup/dump (searching backwards for the `TLV\0` header) and write it to the expected RF offset for the selected BK type.
