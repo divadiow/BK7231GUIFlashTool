@@ -1020,8 +1020,8 @@ namespace BK7231Flasher
         string skey = (kp.Length > 2 && kp[1].Contains('[')) ? kp[1] : kp[0];
         string svalue = kp[kp.Length - 1];
 
-        skey = skey.Trim(new char[] { '"' }).Replace(""", "").Replace("[", "").Replace("{", "");
-        svalue = svalue.Trim(new char[] { '"' }).Replace(""", "").Replace("}", "");
+        skey = skey.Trim(new char[] { '"' }).Replace("\"", "").Replace("[", "").Replace("{", "");
+        svalue = svalue.Trim(new char[] { '"' }).Replace("\"", "").Replace("}", "");
 
         if(findKeyValue(skey) == null)
         {
