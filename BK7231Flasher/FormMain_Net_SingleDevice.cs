@@ -38,14 +38,14 @@ namespace BK7231Flasher
             {
                 settings.addRecentTargetIP(comboBoxIP.Text);
                 saveSettings();
-                labelCheckCommunicationStatus.Text = "Sending GET...";
+                labelCheckCommunicationStatus.Text = "Querying device...";
                 dev = new OBKDeviceAPI(comboBoxIP.Text);
                 dev.sendGetInfo(onGetInfoReply);
             }
             else
             {
-                labelCheckCommunicationStatus.Text = "Invalid IP.";
-                MessageBox.Show("Please enter valid IP string");
+                labelCheckCommunicationStatus.Text = "Invalid IP address.";
+                MessageBox.Show("Please enter a valid IP address.");
             }
         }
         bool checkIsIPOBKDeviceAndShowError()
@@ -53,7 +53,7 @@ namespace BK7231Flasher
             BKType type = dev.getBKType();
             if (type == BKType.Invalid)
             {
-                MessageBox.Show("This is implemented only for BK7231N and BK7231T");
+                MessageBox.Show("This feature is currently supported only on BK7231N and BK7231T.");
                 return false;
             }
             return true;

@@ -77,7 +77,7 @@
             this.label2.Name = "label2";
             this.label2.Size = new System.Drawing.Size(35, 13);
             this.label2.TabIndex = 4;
-            this.label2.Text = "label2";
+            this.label2.Text = "-";
             // 
             // label3
             // 
@@ -112,7 +112,7 @@
             this.buttonOk.Name = "buttonOk";
             this.buttonOk.Size = new System.Drawing.Size(75, 23);
             this.buttonOk.TabIndex = 8;
-            this.buttonOk.Text = "Ok";
+            this.buttonOk.Text = "OK";
             this.buttonOk.UseVisualStyleBackColor = true;
             this.buttonOk.Click += new System.EventHandler(this.buttonOk_Click);
             // 
@@ -131,7 +131,7 @@
             this.Controls.Add(this.textBoxCh0);
             this.Controls.Add(this.comboBoxRole);
             this.Name = "FormPin";
-            this.Text = "FormPin";
+            this.Text = "Edit GPIO";
             this.Load += new System.EventHandler(this.FormPin_Load);
             this.ResumeLayout(false);
             this.PerformLayout();

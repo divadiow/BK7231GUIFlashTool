@@ -23,6 +23,8 @@ namespace BK7231Flasher
         {
             this.index = index;
             this.cfg = cfg;
+            label2.Text = index.ToString();
+            this.Text = "GPIO " + index;
             comboBoxRole.SelectedIndex = cfg.getPinRole(index);
             textBoxCh0.Text = ""+cfg.getPinChannel(index);
             textBoxCh1.Text = "" + cfg.getPinChannel2(index);
