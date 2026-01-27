@@ -1353,7 +1353,7 @@ namespace BK7231Flasher
             this.label24.Size = new System.Drawing.Size(747, 13);
             this.label24.TabIndex = 8;
             this.label24.Text = "Here you can scan your LAN for OpenBeken and Tasmota devices. Scanner will first " +
-    "do a quick, unprecise loop and then some slower, more precise checks.\r\n";
+    "do a quick, imprecise loop and then some slower, more precise checks.\r\n";
             // 
             // listView1
             // 

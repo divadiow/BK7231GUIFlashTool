@@ -90,7 +90,7 @@
             this.Controls.Add(this.richTextBoxLog);
             this.Controls.Add(this.progressBar1);
             this.Name = "FormDownloader";
-            this.Text = "Automatic Firmware Downloader - downloads latest firmware binary from Github";
+            this.Text = "Automatic Firmware Downloader - downloads the latest firmware binary from GitHub";
             this.Load += new System.EventHandler(this.FormDownloader_Load);
             this.ResumeLayout(false);
             this.PerformLayout();
