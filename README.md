@@ -115,7 +115,7 @@ See this tutorial:
 https://www.elektroda.com/rtvforum/viewtopic.php?p=20733610#20733610
 
 # Can't auto download firmware?
-Firmware download will not work on systems without newer TLS version required by GitHub. You can always manually download release from here:
+Firmware download will not work on systems without newer TLS version required by Github. You can always manually download release from here:
 https://github.com/openshwprojects/OpenBK7231T_App
 and put into firmwares bin, then restart flasher.
 

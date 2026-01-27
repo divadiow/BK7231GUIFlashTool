@@ -82,7 +82,7 @@
             this.Controls.Add(this.textBox1);
             this.Controls.Add(this.label1);
             this.Name = "FormPrompt";
-            this.Text = "Enter backup name";
+            this.Text = "FormPrompt";
             this.Load += new System.EventHandler(this.FormPrompt_Load);
             this.ResumeLayout(false);
             this.PerformLayout();

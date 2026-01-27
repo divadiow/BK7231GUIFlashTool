@@ -386,7 +386,7 @@
             // 
             this.saveAsToolStripMenuItem.Name = "saveAsToolStripMenuItem";
             this.saveAsToolStripMenuItem.Size = new System.Drawing.Size(295, 22);
-            this.saveAsToolStripMenuItem.Text = "Save OBK settings as...";
+            this.saveAsToolStripMenuItem.Text = "Save obk settings as...";
             this.saveAsToolStripMenuItem.Click += new System.EventHandler(this.saveAsToolStripMenuItem_Click);
             // 
             // buttonRandomizeNames
@@ -638,7 +638,7 @@
             this.Controls.Add(this.menuStrip1);
             this.MainMenuStrip = this.menuStrip1;
             this.Name = "FormOBKConfig";
-            this.Text = "OBK Config";
+            this.Text = "FormOBKConfig";
             this.FormClosing += new System.Windows.Forms.FormClosingEventHandler(this.FormOBKConfig_FormClosing);
             this.Load += new System.EventHandler(this.FormOBKConfig_Load);
             this.DragDrop += new System.Windows.Forms.DragEventHandler(this.FormOBKConfig_DragDrop);

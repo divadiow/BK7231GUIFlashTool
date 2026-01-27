@@ -43,7 +43,7 @@ namespace BK7231Flasher
             }
             catch (Exception ex)
             {
-                MessageBox.Show("Please enter a valid offset and length.");
+                MessageBox.Show("Please enter correct len/ofs");
                 return true;
             }
             bool bChanged = false;
@@ -61,8 +61,8 @@ namespace BK7231Flasher
             }
             if (bChanged)
             {
-                MessageBox.Show("Adjusted offsets to be a multiple of SECTOR_SIZE ("
-                    +BK7231Flasher.SECTOR_SIZE+"). Please re-check.");
+                MessageBox.Show("Adjusted offsets to be multiply of SECTOR_SIZE ("
+                    +BK7231Flasher.SECTOR_SIZE+"), adjusted, please recheck");
                 return true;
             }
 

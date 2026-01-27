@@ -27,28 +27,28 @@ namespace BK7231Flasher
             IPAddress tmp;
             if(IPAddress.TryParse(textBoxStartIP.Text, out tmp) == false)
             {
-                MessageBox.Show("Invalid start IP address.");
+                MessageBox.Show("Invalid start IP");
                 return;
             }
             if (IPAddress.TryParse(textBoxEndIP.Text, out tmp) == false)
             {
-                MessageBox.Show("Invalid end IP address.");
+                MessageBox.Show("Invalid end IP");
                 return;
             }
             int retriesCount;
             if (int.TryParse(textBoxBoxScannerRetries.Text, out retriesCount) == false)
             {
-                MessageBox.Show("Invalid retry count.");
+                MessageBox.Show("Invalid retries count");
                 return;
             }
             if (int.TryParse(textBoxBoxScannerRetries.Text, out retriesCount) == false)
             {
-                MessageBox.Show("Invalid retry count.");
+                MessageBox.Show("Invalid retries count");
                 return;
             }
             if(retriesCount < 1)
             {
-                MessageBox.Show("Retry count must be at least 1.");
+                MessageBox.Show("It makes no sense to have less than 1 loops.");
                 return;
             }
 

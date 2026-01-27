@@ -77,7 +77,7 @@
             this.buttonCustomRead.Name = "buttonCustomRead";
             this.buttonCustomRead.Size = new System.Drawing.Size(160, 23);
             this.buttonCustomRead.TabIndex = 7;
-            this.buttonCustomRead.Text = "Custom read";
+            this.buttonCustomRead.Text = "Do Custom Read";
             this.buttonCustomRead.UseVisualStyleBackColor = true;
             this.buttonCustomRead.Click += new System.EventHandler(this.button1_Click);
             // 
@@ -87,7 +87,7 @@
             this.buttonCustomWrite.Name = "buttonCustomWrite";
             this.buttonCustomWrite.Size = new System.Drawing.Size(170, 23);
             this.buttonCustomWrite.TabIndex = 8;
-            this.buttonCustomWrite.Text = "Custom write";
+            this.buttonCustomWrite.Text = "Do Custom Write";
             this.buttonCustomWrite.UseVisualStyleBackColor = true;
             this.buttonCustomWrite.Click += new System.EventHandler(this.buttonCustomWrite_Click);
             // 
@@ -114,7 +114,7 @@
             this.Controls.Add(this.textBoxCh1);
             this.Controls.Add(this.textBoxCh0);
             this.Name = "FormCustom";
-            this.Text = "Custom read/write";
+            this.Text = "FormCustom";
             this.Load += new System.EventHandler(this.FormCustom_Load);
             this.ResumeLayout(false);
             this.PerformLayout();

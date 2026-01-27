@@ -555,7 +555,7 @@ namespace BK7231Flasher
             this.buttonOpenBackupsDir.Name = "buttonOpenBackupsDir";
             this.buttonOpenBackupsDir.Size = new System.Drawing.Size(127, 23);
             this.buttonOpenBackupsDir.TabIndex = 23;
-            this.buttonOpenBackupsDir.Text = "Open backups folder";
+            this.buttonOpenBackupsDir.Text = "Open backups dir";
             this.buttonOpenBackupsDir.UseVisualStyleBackColor = true;
             this.buttonOpenBackupsDir.Click += new System.EventHandler(this.buttonOpenBackupsDir_Click);
             // 
@@ -1007,7 +1007,7 @@ namespace BK7231Flasher
             this.linkLabel5.Size = new System.Drawing.Size(160, 13);
             this.linkLabel5.TabIndex = 14;
             this.linkLabel5.TabStop = true;
-            this.linkLabel5.Text = "TuyaConfig from OBK YouTube tutorial";
+            this.linkLabel5.Text = "TuyaConfig from OBK YT tutorial";
             this.linkLabel5.LinkClicked += new System.Windows.Forms.LinkLabelLinkClickedEventHandler(this.linkLabel5_LinkClicked);
             // 
             // label32
@@ -1026,7 +1026,7 @@ namespace BK7231Flasher
             this.buttonTuyaConfig_CopyTextToClipBoard.Name = "buttonTuyaConfig_CopyTextToClipBoard";
             this.buttonTuyaConfig_CopyTextToClipBoard.Size = new System.Drawing.Size(114, 21);
             this.buttonTuyaConfig_CopyTextToClipBoard.TabIndex = 12;
-            this.buttonTuyaConfig_CopyTextToClipBoard.Text = "Copy to clipboard";
+            this.buttonTuyaConfig_CopyTextToClipBoard.Text = "Copy to Clipboard";
             this.buttonTuyaConfig_CopyTextToClipBoard.UseVisualStyleBackColor = true;
             this.buttonTuyaConfig_CopyTextToClipBoard.Click += new System.EventHandler(this.buttonTuyaConfig_CopyTextToClipBoard_Click);
             // 
@@ -1036,7 +1036,7 @@ namespace BK7231Flasher
             this.buttonTuyaConfig_CopyJSONToClipBoard.Name = "buttonTuyaConfig_CopyJSONToClipBoard";
             this.buttonTuyaConfig_CopyJSONToClipBoard.Size = new System.Drawing.Size(114, 21);
             this.buttonTuyaConfig_CopyJSONToClipBoard.TabIndex = 11;
-            this.buttonTuyaConfig_CopyJSONToClipBoard.Text = "Copy to clipboard";
+            this.buttonTuyaConfig_CopyJSONToClipBoard.Text = "Copy to Clipboard";
             this.buttonTuyaConfig_CopyJSONToClipBoard.UseVisualStyleBackColor = true;
             this.buttonTuyaConfig_CopyJSONToClipBoard.Click += new System.EventHandler(this.buttonTuyaConfig_CopyJSONToClipBoard_Click);
             // 
@@ -1113,7 +1113,7 @@ namespace BK7231Flasher
             this.tabPage5.Padding = new System.Windows.Forms.Padding(3);
             this.tabPage5.Size = new System.Drawing.Size(907, 484);
             this.tabPage5.TabIndex = 5;
-            this.tabPage5.Text = "Get config from OBK device on LAN";
+            this.tabPage5.Text = "Get CFG from OBK device on LAN";
             this.tabPage5.UseVisualStyleBackColor = true;
             // 
             // buttonIPSaveResultToFile
@@ -1156,7 +1156,7 @@ namespace BK7231Flasher
             this.buttonIPDownloadTuyaConfig.Name = "buttonIPDownloadTuyaConfig";
             this.buttonIPDownloadTuyaConfig.Size = new System.Drawing.Size(483, 23);
             this.buttonIPDownloadTuyaConfig.TabIndex = 7;
-            this.buttonIPDownloadTuyaConfig.Text = "Download Tuya config (Tuya GPIO) from offset 0x1EE000 (72 KB)";
+            this.buttonIPDownloadTuyaConfig.Text = "Download Tuya config (Tuya GPIO) from 0x1EE000 offset, 72kilobytes";
             this.buttonIPDownloadTuyaConfig.UseVisualStyleBackColor = true;
             this.buttonIPDownloadTuyaConfig.Click += new System.EventHandler(this.buttonIPDownloadTuyaConfig_Click);
             // 
@@ -1253,7 +1253,7 @@ namespace BK7231Flasher
             this.buttonIPScannerOpenDir.Name = "buttonIPScannerOpenDir";
             this.buttonIPScannerOpenDir.Size = new System.Drawing.Size(156, 23);
             this.buttonIPScannerOpenDir.TabIndex = 20;
-            this.buttonIPScannerOpenDir.Text = "Open backups folder";
+            this.buttonIPScannerOpenDir.Text = "Open backups dir";
             this.buttonIPScannerOpenDir.UseVisualStyleBackColor = true;
             this.buttonIPScannerOpenDir.Click += new System.EventHandler(this.buttonIPScannerOpenDir_Click);
             // 
@@ -1315,7 +1315,7 @@ namespace BK7231Flasher
             this.label29.Name = "label29";
             this.label29.Size = new System.Drawing.Size(353, 13);
             this.label29.TabIndex = 13;
-            this.label29.Text = "Automatically download config backups for all devices in the list.";
+            this.label29.Text = "Here you can automatically download CFG backup for all devices from list";
             // 
             // labelMassBackupProgress
             // 
@@ -1332,7 +1332,7 @@ namespace BK7231Flasher
             this.buttonStartMassBackup.Name = "buttonStartMassBackup";
             this.buttonStartMassBackup.Size = new System.Drawing.Size(156, 23);
             this.buttonStartMassBackup.TabIndex = 10;
-            this.buttonStartMassBackup.Text = "Start bulk config backup";
+            this.buttonStartMassBackup.Text = "Start mass CFG backup";
             this.buttonStartMassBackup.UseVisualStyleBackColor = true;
             this.buttonStartMassBackup.Click += new System.EventHandler(this.buttonStartMassBackup_Click);
             // 
@@ -1353,7 +1353,7 @@ namespace BK7231Flasher
             this.label24.Size = new System.Drawing.Size(747, 13);
             this.label24.TabIndex = 8;
             this.label24.Text = "Here you can scan your LAN for OpenBeken and Tasmota devices. Scanner will first " +
-    "do a quick, imprecise pass and then some slower, more precise checks.\r\n";
+    "do a quick, unprecise loop and then some slower, more precise checks.\r\n";
             // 
             // listView1
             // 

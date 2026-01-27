@@ -1230,7 +1230,7 @@ namespace BK7231Flasher
         {
             if (true)
             {
-                MessageBox.Show("This option is developer-only; it is disabled in release builds.");
+                MessageBox.Show("This option is developer-only, it's disabled in release");
                 return;
             }
             if (doGenericOperationPreparations() == false)
@@ -1245,7 +1245,7 @@ namespace BK7231Flasher
         {
             if (true)
             {
-                MessageBox.Show("This option is developer-only; it is disabled in release builds.");
+                MessageBox.Show("This option is developer-only, it's disabled in release");
                 return;
             }
             if (doGenericOperationPreparations() == false)
@@ -1638,7 +1638,7 @@ namespace BK7231Flasher
 
         private void buttonIPDump2MB_Click(object sender, EventArgs e)
         {
-            MessageBox.Show("Not implemented (not currently needed).");
+            MessageBox.Show("Not implemented yet, as it's not needed");
         }
 
         private void buttonIPSaveResultToFile_Click(object sender, EventArgs e)
