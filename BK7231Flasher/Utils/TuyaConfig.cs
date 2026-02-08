@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using static BK7231Flasher.MiscUtils;
@@ -46,6 +47,101 @@ namespace BK7231Flasher
         const int USUAL_BK7252_MAGIC_POSITION = 3764224;
 
         const int KVHeaderSize = 0x12;
+
+        // Diagnostic fields (enabled via environment variables: OBK_TUYA_ENH_DIAG=1 or OBK_TUYA_DIAG=1)
+        private bool diagIs64;
+        private int diagPtrSize;
+        private string diagAesCreate = "n/a";
+        private string diagAesUsed = "n/a";
+        private int diagDevKeys;
+        private int diagPages;
+        private int diagScore;
+        private int diagPagesFirst;
+        private int diagPagesNext;
+        private int diagPagesOS3;
+        private int diagBadCrc;
+        private uint diagMagic;
+        private int diagKvs;
+        private int diagRenderErrs;
+        private string diagRenderErr1Key;
+        private string diagRenderErr1Ex;
+        private string diagRenderErr1Msg;
+        private bool diagInitDone;
+        private bool diagJsonTestDone;
+
+        private bool IsDiagEnabled()
+        {
+            return Environment.GetEnvironmentVariable("OBK_TUYA_ENH_DIAG") == "1" ||
+                   Environment.GetEnvironmentVariable("OBK_TUYA_DIAG") == "1";
+        }
+
+        private void ResetDiag()
+        {
+            diagIs64 = false;
+            diagPtrSize = 0;
+            diagAesCreate = "n/a";
+            diagAesUsed = "n/a";
+            diagDevKeys = 0;
+            diagPages = 0;
+            diagScore = 0;
+            diagPagesFirst = 0;
+            diagPagesNext = 0;
+            diagPagesOS3 = 0;
+            diagBadCrc = 0;
+            diagMagic = 0;
+            diagKvs = 0;
+            diagRenderErrs = 0;
+            diagRenderErr1Key = null;
+            diagRenderErr1Ex = null;
+            diagRenderErr1Msg = null;
+            diagInitDone = false;
+            diagJsonTestDone = false;
+        }
+
+        private void EnsureDiagInit()
+        {
+            if (diagInitDone)
+                return;
+
+            diagInitDone = true;
+            diagIs64 = Environment.Is64BitProcess;
+            diagPtrSize = IntPtr.Size;
+        }
+
+        private static string SanitizeDiag(string s, int maxLen = 180)
+        {
+            if (string.IsNullOrEmpty(s))
+                return s;
+
+            s = s.Replace("\r", " ").Replace("\n", " ");
+            s = Regex.Replace(s, @"\s+", " ").Trim();
+            if (s.Length > maxLen)
+                s = s.Substring(0, maxLen);
+            return s;
+        }
+
+        private void EnsureJsonRenderSelfTest()
+        {
+            if (diagJsonTestDone)
+                return;
+
+            diagJsonTestDone = true;
+            try
+            {
+                // Force-load System.Text.Json (+ dependencies) in the same way the enhanced renderer would.
+                var opts = new JsonSerializerOptions { WriteIndented = true };
+                var json = JsonSerializer.Serialize(new { a = 1 }, opts);
+                using var doc = JsonDocument.Parse(json);
+            }
+            catch (Exception ex)
+            {
+                diagRenderErrs = 1;
+                diagRenderErr1Key = "__json_test";
+                diagRenderErr1Ex = ex.GetType().FullName;
+                diagRenderErr1Msg = SanitizeDiag(ex.Message);
+            }
+        }
+
 
         int magicPosition = -1;
         byte[] descryptedRaw;
@@ -226,6 +322,11 @@ namespace BK7231Flasher
         {
             descryptedRaw = null;
             original = data;
+            if (IsDiagEnabled())
+            {
+                ResetDiag();
+                EnsureDiagInit();
+            }
             if (isFullOf(data, 0xff))
             {
                 FormMain.Singleton.addLog("It seems that dragged binary is full of 0xff, someone must have erased the flash" + Environment.NewLine, System.Drawing.Color.Purple);
@@ -262,6 +363,10 @@ namespace BK7231Flasher
             descryptedRaw = null;
 
             var deviceKeys = FindDeviceKeys(flash);
+            if (IsDiagEnabled())
+            {
+                diagDevKeys = deviceKeys?.Count ?? 0;
+            }
             if(deviceKeys.Count == 0)
             {
                 FormMain.Singleton.addLog("Failed to extract Tuya keys - magic constant header not found in binary" + Environment.NewLine, System.Drawing.Color.Purple);
@@ -281,6 +386,8 @@ namespace BK7231Flasher
 
             List<VaultPage> bestPages = null;
             int bestCount = 0;
+            uint bestMagic = 0;
+            int bestBadCrc = 0;
             var obj = new object();
             var time = Stopwatch.StartNew();
             foreach(var devKey in deviceKeys)
@@ -288,6 +395,12 @@ namespace BK7231Flasher
                 Parallel.ForEach(baseKeyCandidates, baseKey =>
                 {
                     using var aes = Aes.Create();
+            if (IsDiagEnabled())
+            {
+                EnsureDiagInit();
+                diagAesCreate = aes.GetType().FullName;
+                diagAesUsed = aes.GetType().FullName;
+            }
                     aes.Mode = CipherMode.ECB;
                     aes.Padding = PaddingMode.None;
                     aes.KeySize = 128;
@@ -298,6 +411,8 @@ namespace BK7231Flasher
                     foreach(var magic in pageMagics)
                     {
                         List<VaultPage> pages = new List<VaultPage>();
+
+                        int badCrcThisMagic = 0;
 
                         for(int ofs = 0; ofs + SECTOR_SIZE <= flash.Length; ofs += SECTOR_SIZE)
                         {
@@ -313,6 +428,7 @@ namespace BK7231Flasher
                             var crc = ReadU32LE(dec, 4);
                             if(!checkCRC(crc, dec, 8, dec.Length - 8))
                             {
+                                badCrcThisMagic++;
                                 FormMain.Singleton.addLog($"WARNING - bad block CRC at offset {ofs}" + Environment.NewLine, System.Drawing.Color.Purple);
                                 continue;
                             }
@@ -328,11 +444,13 @@ namespace BK7231Flasher
                         }
                         lock(obj)
                         {
-                            if(pages.Count > bestCount)
-                            {
-                                bestCount = pages.Count;
-                                bestPages = pages;
-                            }
+                            if (pages.Count > bestCount)
+                    {
+                        bestCount = pages.Count;
+                        bestPages = pages;
+                        bestMagic = magic;
+                        bestBadCrc = badCrcThisMagic;
+                    }
                         }
                     }
                 });
@@ -342,6 +460,16 @@ namespace BK7231Flasher
             {
                 FormMain.Singleton.addLog("Failed to extract Tuya keys - decryption failed" + Environment.NewLine, System.Drawing.Color.Orange);
                 return false;
+            }
+
+            if (IsDiagEnabled())
+            {
+                diagPages = bestPages?.Count ?? 0;
+                diagPagesFirst = (bestMagic == MAGIC_FIRST_BLOCK) ? diagPages : 0;
+                diagPagesNext = (bestMagic == MAGIC_NEXT_BLOCK) ? diagPages : 0;
+                diagPagesOS3 = (bestMagic == MAGIC_FIRST_BLOCK_OS3) ? diagPages : 0;
+                diagBadCrc = bestBadCrc;
+                diagMagic = bestMagic;
             }
             FormMain.Singleton.addLog($"Decryption took {time.ElapsedMilliseconds} ms" + Environment.NewLine, System.Drawing.Color.DarkSlateGray);
 
@@ -965,6 +1093,40 @@ namespace BK7231Flasher
                     break;
 
             }
+            if (IsDiagEnabled())
+            {
+                EnsureDiagInit();
+                EnsureJsonRenderSelfTest();
+
+                var outlen = desc?.Length ?? 0;
+
+                var diag = "#diag: " +
+                           "is64=" + diagIs64 +
+                           " ptr=" + diagPtrSize +
+                           " aes_create=" + diagAesCreate +
+                           " aes_used=" + diagAesUsed +
+                           " devkeys=" + diagDevKeys +
+                           " pages=" + diagPages +
+                           " score=" + diagScore +
+                           " pages_first=" + diagPagesFirst +
+                           " pages_next=" + diagPagesNext +
+                           " pages_os3=" + diagPagesOS3 +
+                           " badcrc=" + diagBadCrc +
+                           " magic=0x" + diagMagic.ToString("X8") +
+                           " kvs=" + diagKvs +
+                           " rendererrs=" + diagRenderErrs;
+
+                if (diagRenderErrs > 0)
+                {
+                    diag += " rendererr1_key=" + (diagRenderErr1Key ?? "") +
+                            " rendererr1_ex=" + (diagRenderErr1Ex ?? "") +
+                            " rendererr1_msg=" + (diagRenderErr1Msg ?? "");
+                }
+
+                diag += " outlen=" + outlen;
+                desc = diag + Environment.NewLine + desc;
+            }
+
             return desc;
         }
         public string getKeyValue(string key, string sdefault = "")
@@ -991,12 +1153,21 @@ namespace BK7231Flasher
         public bool extractKeys()
         {
             var KVs = ParseVault();
+            if (IsDiagEnabled())
+            {
+                diagScore = KVs?.Count ?? 0;
+            }
             var KVs_Deduped = KVs
                 .GroupBy(x => x.Key)
                 .Select(g => g.OrderByDescending(x => x.IsCheckSumCorrect).First())
                 .GroupBy(x => Convert.ToBase64String(x.Value))
                 .Select(g => g.OrderByDescending(x => x.KeyId).First())
                 .ToList();
+
+            if (IsDiagEnabled())
+            {
+                diagKvs = KVs_Deduped?.Count ?? 0;
+            }
 
             byte[] str = KVs_Deduped.FirstOrDefault(x => x.Key == "user_param_key" && x.IsCheckSumCorrect == true)?.Value ??
                 KVs_Deduped.FirstOrDefault(x => x.Key == "baud_cfg" && x.IsCheckSumCorrect == true)?.Value;
