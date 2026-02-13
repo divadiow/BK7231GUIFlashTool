@@ -813,7 +813,6 @@ namespace BK7231Flasher
              }
         }
 
-       
         public bool Connect()
         {
             logger.setState("Connecting to ESP32...", Color.Yellow);
@@ -823,89 +822,160 @@ namespace BK7231Flasher
                 return false;
             }
 
-            // Some USB-UART adapters (or dev boards) wire the auto-reset control lines differently.
-            // We try the classic esptool reset sequence with both mappings, and log each attempt.
-            string[] resetModes = new string[]
+            // NOTE:
+            // There are two practical "ClassicReset" flavours in the wild:
+            //  - Legacy hold-IO0: keep IO0 asserted (DTR) after releasing reset and wait longer (often more reliable on some auto-reset circuits).
+            //  - esptool classic: release IO0 shortly after reset release.
+            //
+            // Also, on some Windows usbser.sys paths, RTS changes may not propagate unless DTR is also "touched" (esptool workaround).
+            //
+            // We try a small matrix of strategies and LOG each attempt as it happens.
+
+            bool SyncWithMode(string modeName, Action resetAction, bool discardAfterReset)
             {
-                "ClassicReset (DTR=IO0, RTS=EN) + usbser workaround",
-                "ClassicReset (DTR=EN, RTS=IO0) [swapped] + usbser workaround"
-            };
-            bool[] swapped = new bool[] { false, true };
-
-            for(int i = 0; i < resetModes.Length; i++)
-            {
-                addLogLine("Trying reset mode: " + resetModes[i]);
-                DoClassicReset(swapped[i]);
-
-                try { serial.DiscardInBuffer(); } catch { }
-                try { serial.DiscardOutBuffer(); } catch { }
-
-                if (Sync())
+                cancellationToken.ThrowIfCancellationRequested();
+                addLogLine(modeName);
+                try
                 {
-                    logger.setState("ESP32 synced", Color.LightGreen);
-                    addSuccess(Environment.NewLine + "Synced with ESP32!" + Environment.NewLine);
-                    if (!SpiAttach())
+                    resetAction();
+                    if (discardAfterReset)
                     {
-                        addErrorLine("Failed to configure SPI pins.");
-                        return false;
+                        try { serial.DiscardInBuffer(); } catch { }
+                        try { serial.DiscardOutBuffer(); } catch { }
                     }
-                    return true;
+                }
+                catch (Exception ex)
+                {
+                    addLogLine("Reset exception: " + ex.Message);
                 }
 
-                addLogLine("Sync failed using reset mode: " + resetModes[i]);
+                bool ok = Sync();
+                if (!ok)
+                    addLogLine("Sync failed: " + modeName);
+                return ok;
             }
 
-            logger.setState("ESP32 sync failed", Color.Red);
-            addErrorLine("Failed to sync with ESP32.");
-            return false;
-        }
-
-        private void ApplyControlLines(bool dtrEnable, bool rtsEnable, bool swappedMapping)
-        {
-            bool dtr = dtrEnable;
-            bool rts = rtsEnable;
-
-            if (swappedMapping)
+            // Helper setters with optional DTR "touch" workaround after RTS changes.
+            void SetIO0(bool assertedLow, bool swapDtrRts)
             {
-                // Swap the logical meaning of the lines (some boards wire them opposite to the common RTS->EN, DTR->IO0 mapping)
-                dtr = rtsEnable;
-                rts = dtrEnable;
+                if (!swapDtrRts)
+                    serial.DtrEnable = assertedLow;
+                else
+                    serial.RtsEnable = assertedLow;
             }
 
-            // Set DTR first, then RTS (matches esptool ordering), then "touch" DTR again.
-            // The final DTR set is a Windows usbser.sys workaround used by esptool to ensure the RTS/DTR state change propagates.
-            serial.DtrEnable = dtr;
-            bool dtrNow = dtr;
-            serial.RtsEnable = rts;
-            serial.DtrEnable = dtrNow;
-        }
-
-        private void DoClassicReset(bool swappedMapping)
-        {
-            try
+            void SetEN(bool assertedLow, bool swapDtrRts, bool usbserWorkaroundTouchDtr)
             {
-                // Start from neutral
-                ApplyControlLines(false, false, swappedMapping);
-                Thread.Sleep(50);
+                if (!swapDtrRts)
+                    serial.RtsEnable = assertedLow;
+                else
+                    serial.DtrEnable = assertedLow;
 
-                // ClassicReset (esptool-style):
-                // DTR=0, RTS=1 -> wait -> DTR=1, RTS=0 -> wait -> DTR=0
-                ApplyControlLines(false, true, swappedMapping);
+                if (usbserWorkaroundTouchDtr)
+                {
+                    // Best-effort: re-apply the other line state to force a control-line-state update on some Windows stacks.
+                    try
+                    {
+                        if (!swapDtrRts)
+                            serial.DtrEnable = serial.DtrEnable;
+                        else
+                            serial.RtsEnable = serial.RtsEnable;
+                    }
+                    catch { }
+                }
+            }
+
+            // Legacy "ClassicReset" used by earlier tool versions:
+            // DTR=0, RTS=1 -> wait -> DTR=1, RTS=0 -> wait (and KEEP IO0 asserted)
+            void ResetClassic_LegacyHoldIO0(bool swapDtrRts, bool usbserWorkaroundTouchDtr)
+            {
+                SetIO0(false, swapDtrRts);                 // IO0=HIGH (deassert)
+                SetEN(true, swapDtrRts, usbserWorkaroundTouchDtr);   // EN=LOW  (reset)
                 Thread.Sleep(100);
 
-                ApplyControlLines(true, false, swappedMapping);
+                SetIO0(true, swapDtrRts);                  // IO0=LOW  (assert strap)
+                SetEN(false, swapDtrRts, usbserWorkaroundTouchDtr);  // EN=HIGH (release reset)
+                Thread.Sleep(500);                         // longer settle (legacy behaviour)
+                // DO NOT release IO0 here (legacy behaviour)
+            }
+
+            // esptool "ClassicReset":
+            // DTR=0, RTS=1 -> wait -> DTR=1, RTS=0 -> wait -> DTR=0
+            void ResetClassic_Esptool(bool swapDtrRts, bool usbserWorkaroundTouchDtr)
+            {
+                SetIO0(false, swapDtrRts);                 // IO0=HIGH
+                SetEN(true, swapDtrRts, usbserWorkaroundTouchDtr);   // EN=LOW
+                Thread.Sleep(100);
+
+                SetIO0(true, swapDtrRts);                  // IO0=LOW
+                SetEN(false, swapDtrRts, usbserWorkaroundTouchDtr);  // EN=HIGH
                 Thread.Sleep(50);
 
-                ApplyControlLines(false, false, swappedMapping);
-                Thread.Sleep(500);
+                SetIO0(false, swapDtrRts);                 // IO0=HIGH (done)
+                Thread.Sleep(50);
             }
-            catch (Exception ex)
+
+            bool synced = false;
+
+            // 1) Legacy classic reset (known-good on some boards) - no workaround first
+            synced = SyncWithMode("Resetting into download mode (ClassicReset-LegacyHoldIO0, default mapping, no workaround)...",
+                                  () => ResetClassic_LegacyHoldIO0(false, false),
+                                  discardAfterReset:false);
+
+            // 2) Legacy, swapped mapping
+            if (!synced)
+                synced = SyncWithMode("Resetting into download mode (ClassicReset-LegacyHoldIO0, swapped mapping, no workaround)...",
+                                      () => ResetClassic_LegacyHoldIO0(true, false),
+                                      discardAfterReset:false);
+
+            // 3) Legacy + workaround (default mapping)
+            if (!synced)
+                synced = SyncWithMode("Resetting into download mode (ClassicReset-LegacyHoldIO0, default mapping, usbser workaround)...",
+                                      () => ResetClassic_LegacyHoldIO0(false, true),
+                                      discardAfterReset:false);
+
+            // 4) Legacy + workaround (swapped mapping)
+            if (!synced)
+                synced = SyncWithMode("Resetting into download mode (ClassicReset-LegacyHoldIO0, swapped mapping, usbser workaround)...",
+                                      () => ResetClassic_LegacyHoldIO0(true, true),
+                                      discardAfterReset:false);
+
+            // 5) esptool classic + workaround (default mapping)
+            if (!synced)
+                synced = SyncWithMode("Resetting into download mode (ClassicReset-Esptool, default mapping, usbser workaround)...",
+                                      () => ResetClassic_Esptool(false, true),
+                                      discardAfterReset:true);
+
+            // 6) esptool classic + workaround (swapped mapping)
+            if (!synced)
+                synced = SyncWithMode("Resetting into download mode (ClassicReset-Esptool, swapped mapping, usbser workaround)...",
+                                      () => ResetClassic_Esptool(true, true),
+                                      discardAfterReset:true);
+
+            // 7) no reset
+            if (!synced)
             {
-                addErrorLine("Reset toggle failed: " + ex.Message);
+                synced = SyncWithMode("Resetting into download mode (NoReset / just Sync)...",
+                                      () => { },
+                                      discardAfterReset:true);
             }
+
+            if (synced)
+            {
+                logger.setState("ESP32 synced", Color.LightGreen);
+                addSuccess(Environment.NewLine + "Synced with ESP32!" + Environment.NewLine);
+                if (!SpiAttach())
+                {
+                    addErrorLine("Failed to configure SPI pins.");
+                    return false;
+                }
+                return true;
+            }
+
+            logger.setState("ESP32 sync failed", Color.OrangeRed);
+            addErrorLine("Failed to sync with ESP32 (all reset modes tried).");
+            return false;
         }
-
-
 
 
         bool SpiAttach()
