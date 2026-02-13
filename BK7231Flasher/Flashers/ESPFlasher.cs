@@ -813,6 +813,7 @@ namespace BK7231Flasher
              }
         }
 
+       
         public bool Connect()
         {
             logger.setState("Connecting to ESP32...", Color.Yellow);
@@ -822,31 +823,89 @@ namespace BK7231Flasher
                 return false;
             }
 
-            // Reset strategy: DTR=0, RTS=1 -> DTR=1, RTS=0
-            serial.DtrEnable = false;
-            serial.RtsEnable = true;
-            // Windows usbser.sys workaround (mirrors esptool): re-apply DTR state after RTS changes
-            serial.DtrEnable = serial.DtrEnable;
-            Thread.Sleep(100);
-            serial.DtrEnable = true;
-            serial.RtsEnable = false;
-            // Windows usbser.sys workaround (mirrors esptool): re-apply DTR state after RTS changes
-            serial.DtrEnable = serial.DtrEnable;
-            Thread.Sleep(500);
-
-            if (Sync())
+            // Some USB-UART adapters (or dev boards) wire the auto-reset control lines differently.
+            // We try the classic esptool reset sequence with both mappings, and log each attempt.
+            string[] resetModes = new string[]
             {
-                logger.setState("ESP32 synced", Color.LightGreen);
-                addSuccess(Environment.NewLine + "Synced with ESP32!" + Environment.NewLine);
-                if (!SpiAttach())
+                "ClassicReset (DTR=IO0, RTS=EN) + usbser workaround",
+                "ClassicReset (DTR=EN, RTS=IO0) [swapped] + usbser workaround"
+            };
+            bool[] swapped = new bool[] { false, true };
+
+            for(int i = 0; i < resetModes.Length; i++)
+            {
+                addLogLine("Trying reset mode: " + resetModes[i]);
+                DoClassicReset(swapped[i]);
+
+                try { serial.DiscardInBuffer(); } catch { }
+                try { serial.DiscardOutBuffer(); } catch { }
+
+                if (Sync())
                 {
-                    addErrorLine("Failed to configure SPI pins.");
-                    return false;
+                    logger.setState("ESP32 synced", Color.LightGreen);
+                    addSuccess(Environment.NewLine + "Synced with ESP32!" + Environment.NewLine);
+                    if (!SpiAttach())
+                    {
+                        addErrorLine("Failed to configure SPI pins.");
+                        return false;
+                    }
+                    return true;
                 }
-                return true;
+
+                addLogLine("Sync failed using reset mode: " + resetModes[i]);
             }
-            return false; // Placeholder return
+
+            logger.setState("ESP32 sync failed", Color.Red);
+            addErrorLine("Failed to sync with ESP32.");
+            return false;
         }
+
+        private void ApplyControlLines(bool dtrEnable, bool rtsEnable, bool swappedMapping)
+        {
+            bool dtr = dtrEnable;
+            bool rts = rtsEnable;
+
+            if (swappedMapping)
+            {
+                // Swap the logical meaning of the lines (some boards wire them opposite to the common RTS->EN, DTR->IO0 mapping)
+                dtr = rtsEnable;
+                rts = dtrEnable;
+            }
+
+            // Set DTR first, then RTS (matches esptool ordering), then "touch" DTR again.
+            // The final DTR set is a Windows usbser.sys workaround used by esptool to ensure the RTS/DTR state change propagates.
+            serial.DtrEnable = dtr;
+            bool dtrNow = dtr;
+            serial.RtsEnable = rts;
+            serial.DtrEnable = dtrNow;
+        }
+
+        private void DoClassicReset(bool swappedMapping)
+        {
+            try
+            {
+                // Start from neutral
+                ApplyControlLines(false, false, swappedMapping);
+                Thread.Sleep(50);
+
+                // ClassicReset (esptool-style):
+                // DTR=0, RTS=1 -> wait -> DTR=1, RTS=0 -> wait -> DTR=0
+                ApplyControlLines(false, true, swappedMapping);
+                Thread.Sleep(100);
+
+                ApplyControlLines(true, false, swappedMapping);
+                Thread.Sleep(50);
+
+                ApplyControlLines(false, false, swappedMapping);
+                Thread.Sleep(500);
+            }
+            catch (Exception ex)
+            {
+                addErrorLine("Reset toggle failed: " + ex.Message);
+            }
+        }
+
+
 
 
         bool SpiAttach()
