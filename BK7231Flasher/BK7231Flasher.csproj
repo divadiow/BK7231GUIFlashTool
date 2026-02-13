@@ -66,6 +66,7 @@
     </Compile>
     <Compile Include="Flashers\RDAFlasher.cs" />
     <Compile Include="Flashers\ESPFlasher.cs" />
+    <Compile Include="Flashers\Esp32SerialReset.cs" />
     <Compile Include="Utils\Xmodem.cs" />
     <Compile Include="Flashers\WMFlasher.cs" />
     <Compile Include="Flashers\ECR6600Flasher.cs" />

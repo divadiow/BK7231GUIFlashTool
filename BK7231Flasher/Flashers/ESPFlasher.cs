@@ -7,9 +7,6 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Diagnostics;
-using System.Reflection;
-using System.Runtime.InteropServices;
-using Microsoft.Win32.SafeHandles;
 
 namespace BK7231Flasher
 {
@@ -48,177 +45,11 @@ namespace BK7231Flasher
         byte[] _slipBuf = new byte[4096];
         public bool LegacyMode { get; set; } = false;
 
-        // ---- ESP32 auto-reset/download-mode helpers (esptool-aligned) ----
-        // On Windows (usbser.sys in particular), some USB-UART paths don't reliably propagate RTS
-        // changes unless a "set control line state" request is also sent for DTR. esptool works
-        // around this by re-sending DTR state after every RTS change.
-        //
-        // .NET SerialPort may short-circuit no-op DTR sets, so when possible we use
-        // EscapeCommFunction() directly to force the control-line update even if the state is unchanged.
-        private bool _dtrState = false;
-        private bool _rtsState = false;
-        private bool _haveWin32Handle = false;
-        private IntPtr _comHandle = IntPtr.Zero;
+        // ---- ESP32 auto-reset/download-mode helpers ----
+        // Platform/driver-specific reset behaviour (Windows usbser.sys quirks, USB-Serial-JTAG reset, etc.)
+        // is implemented in a separate class to keep ESPFlasher focused on the ROM protocol.
+        private readonly Esp32SerialReset _reset = new Esp32SerialReset();
 
-        private const uint SETRTS = 3;
-        private const uint CLRRTS = 4;
-        private const uint SETDTR = 5;
-        private const uint CLRDTR = 6;
-
-        [DllImport("kernel32.dll", SetLastError = true)]
-        private static extern bool EscapeCommFunction(IntPtr hFile, uint dwFunc);
-
-        private void RefreshComHandle()
-        {
-            _haveWin32Handle = false;
-            _comHandle = IntPtr.Zero;
-
-            try
-            {
-                if (serial == null || !serial.IsOpen)
-                    return;
-
-                var bs = serial.BaseStream;
-                if (bs == null)
-                    return;
-
-                SafeFileHandle sfh = null;
-                var t = bs.GetType();
-
-                // .NET Framework SerialStream has a private SafeFileHandle field (commonly "_handle")
-                var prop = t.GetProperty("SafeFileHandle", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                if (prop != null)
-                {
-                    sfh = prop.GetValue(bs, null) as SafeFileHandle;
-                }
-
-                if (sfh == null)
-                {
-                    var fld = t.GetField("_handle", BindingFlags.Instance | BindingFlags.NonPublic)
-                              ?? t.GetField("handle", BindingFlags.Instance | BindingFlags.NonPublic);
-                    if (fld != null)
-                    {
-                        sfh = fld.GetValue(bs) as SafeFileHandle;
-                    }
-                }
-
-                if (sfh != null && !sfh.IsInvalid)
-                {
-                    _comHandle = sfh.DangerousGetHandle();
-                    _haveWin32Handle = _comHandle != IntPtr.Zero;
-                }
-            }
-            catch
-            {
-                _haveWin32Handle = false;
-                _comHandle = IntPtr.Zero;
-            }
-        }
-
-        private void SetDTR(bool state)
-        {
-            _dtrState = state;
-
-            if (serial == null)
-                return;
-
-            if (_haveWin32Handle)
-            {
-                EscapeCommFunction(_comHandle, state ? SETDTR : CLRDTR);
-                return;
-            }
-
-            serial.DtrEnable = state;
-        }
-
-        private void SetRTS(bool state)
-        {
-            _rtsState = state;
-
-            if (serial == null)
-                return;
-
-            if (_haveWin32Handle)
-            {
-                EscapeCommFunction(_comHandle, state ? SETRTS : CLRRTS);
-
-                // Match esptool's usbser.sys workaround: re-send DTR state after RTS change
-                EscapeCommFunction(_comHandle, _dtrState ? SETDTR : CLRDTR);
-                return;
-            }
-
-            serial.RtsEnable = state;
-
-            // Best-effort fallback: re-apply current DTR state after RTS change
-            // (Some stacks only emit a "control line state" update on a DTR call.)
-            try
-            {
-                serial.DtrEnable = serial.DtrEnable;
-            }
-            catch { }
-        }
-
-        // esptool ClassicReset: D0|R1|W0.1|D1|R0|W0.05|D0
-        private void DoClassicReset()
-        {
-            SetDTR(false);   // IO0=HIGH
-            SetRTS(true);    // EN=LOW
-            Thread.Sleep(100);
-            SetDTR(true);    // IO0=LOW
-            SetRTS(false);   // EN=HIGH
-            Thread.Sleep(50);
-            SetDTR(false);   // IO0=HIGH, done
-        }
-
-        // esptool USBJTAGSerialReset (for ESP32-S3/C3 etc when using USB-Serial-JTAG)
-        private void DoUSBJTAGSerialReset()
-        {
-            SetRTS(false);
-            SetDTR(false);   // idle
-            Thread.Sleep(100);
-
-            SetDTR(true);    // set IO0
-            SetRTS(false);
-            Thread.Sleep(100);
-
-            // Reset. Calls inverted to go through (1,1) instead of (0,0)
-            SetRTS(true);
-            SetDTR(false);
-            SetRTS(true);    // RTS set as Windows only propagates DTR on RTS setting
-            Thread.Sleep(100);
-
-            SetDTR(false);
-            SetRTS(false);   // chip out of reset
-        }
-
-        private bool TryReset(Action resetAction)
-        {
-            for (int attempt = 0; attempt < 3; attempt++)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-
-                try
-                {
-                    if (serial == null || !serial.IsOpen)
-                    {
-                        if (!openPort())
-                            return false;
-                    }
-
-                    RefreshComHandle();
-                    resetAction();
-                    return true;
-                }
-                catch (Exception ex) when (ex is IOException || ex is InvalidOperationException)
-                {
-                    try { closePort(); } catch { }
-                    serial = null;
-                    Thread.Sleep(500);
-                }
-            }
-            return false;
-        }
-        // ---- end helpers ----
 
 
         public ESPFlasher(CancellationToken ct) : base(ct)
@@ -295,16 +126,9 @@ namespace BK7231Flasher
                     serial.ReadBufferSize = 32768;
                     serial.Open();
 
-                    // Cache a native handle for reliable DTR/RTS toggling (usbser.sys quirk)
-                    RefreshComHandle();
-
-                    // Keep our cached state consistent with the intended neutral state
-                    _dtrState = false;
-                    _rtsState = false;
-
-                    // Apply neutral state using our helpers (ensures any driver defaults are overridden)
-                    SetDTR(false);
-                    SetRTS(false);
+                    // Bind reset helper to this port and force a known-neutral modem-control state.
+                    _reset.Bind(serial);
+                    _reset.SetNeutral();
                 }
                 else
                 {
@@ -313,8 +137,8 @@ namespace BK7231Flasher
                     serial.Handshake = Handshake.None;
                     serial.BaudRate = 115200;
 
-                    // Refresh handle in case the device was re-enumerated
-                    RefreshComHandle();
+                    // Re-bind reset helper in case the device was re-enumerated
+                    _reset.Bind(serial);
                 }
 
                 serial.DiscardInBuffer();
@@ -1028,7 +852,7 @@ namespace BK7231Flasher
             //
             // We try ClassicReset first, then fall back to USBJTAGSerialReset if SYNC fails.
             addLogLine("Resetting into download mode (ClassicReset)...");
-            if (!TryReset(() => DoClassicReset()))
+            if (!TryReset(() => _reset.ClassicReset()))
             {
                 addErrorLine("Reset attempt failed (ClassicReset).");
                 return false;
@@ -1055,7 +879,8 @@ namespace BK7231Flasher
                     return false;
                 }
 
-                if (!TryReset(() => DoUSBJTAGSerialReset()))
+                addLogLine("Resetting into download mode (USBJTAGSerialReset)...");
+                if (!TryReset(() => _reset.USBJTAGSerialReset()))
                 {
                     addErrorLine("Reset attempt failed (USB-JTAG-Serial).");
                     return false;
