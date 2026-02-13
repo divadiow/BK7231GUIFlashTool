@@ -118,7 +118,13 @@ namespace BK7231Flasher
                     // (port may still be at a higher baud from a previous operation)
                     serial.BaudRate = 115200;
                 }
-                serial.DiscardInBuffer();
+                // Ensure handshake doesn't override RTS and start from a neutral line state (matches esptool defaults).
+serial.Handshake = Handshake.None;
+serial.DtrEnable = false;
+serial.RtsEnable = false;
+Thread.Sleep(20);
+
+serial.DiscardInBuffer();
                 serial.DiscardOutBuffer();
                 return true;
             }
@@ -812,36 +818,178 @@ namespace BK7231Flasher
                  return null;
              }
         }
+// Reset helpers: match esptool reset strategies as closely as SerialPort allows on Windows.
+// esptool reference: esptool/reset.py (ClassicReset, USBJTAGSerialReset)
+void SetControlLineDTR(bool state, bool swapDtrRts)
+{
+    // Default wiring: DTR -> IO0, RTS -> EN. Some adapters swap these.
+    if (!swapDtrRts)
+    {
+        serial.DtrEnable = state;
+    }
+    else
+    {
+        serial.RtsEnable = state;
+    }
+}
+
+void SetControlLineRTS(bool state, bool swapDtrRts)
+{
+    if (!swapDtrRts)
+    {
+        serial.RtsEnable = state;
+    }
+    else
+    {
+        serial.DtrEnable = state;
+    }
+
+    // Work-around for some Windows usbser.sys paths: "touch" the other line so the
+    // set-control-line-state request is sent with the updated RTS state (mirrors esptool).
+    try
+    {
+        if (!swapDtrRts)
+            serial.DtrEnable = serial.DtrEnable;
+        else
+            serial.RtsEnable = serial.RtsEnable;
+    }
+    catch { }
+}
+
+void ResetToBootloaderClassic(bool swapDtrRts)
+{
+    // esptool ClassicReset: D0|R1|W0.1|D1|R0|W0.05|D0
+    SetControlLineDTR(false, swapDtrRts); // IO0=HIGH
+    SetControlLineRTS(true, swapDtrRts);  // EN=LOW (reset asserted)
+    Thread.Sleep(100);
+
+    SetControlLineDTR(true, swapDtrRts);  // IO0=LOW
+    SetControlLineRTS(false, swapDtrRts); // EN=HIGH (release reset)
+    Thread.Sleep(50);
+
+    SetControlLineDTR(false, swapDtrRts); // IO0=HIGH (done)
+    Thread.Sleep(50);
+}
+
+void ResetToBootloaderUSBJTAGSerial(bool swapDtrRts)
+{
+    // esptool USBJTAGSerialReset: used for ESP chips connected via USB-JTAG-Serial peripheral.
+    // This matters for some ESP32-C3/S3 variants where ClassicReset doesn't work reliably.
+    SetControlLineRTS(false, swapDtrRts);
+    SetControlLineDTR(false, swapDtrRts);
+    Thread.Sleep(100);
+
+    SetControlLineDTR(true, swapDtrRts); // Set IO0
+    SetControlLineRTS(false, swapDtrRts);
+    Thread.Sleep(100);
+
+    // Reset. Calls inverted to go through (1,1) instead of (0,0)
+    SetControlLineRTS(true, swapDtrRts);
+    SetControlLineDTR(false, swapDtrRts);
+
+    // RTS set as Windows only propagates DTR on RTS setting (mirrors esptool).
+    SetControlLineRTS(true, swapDtrRts);
+    Thread.Sleep(100);
+
+    SetControlLineDTR(false, swapDtrRts);
+    SetControlLineRTS(false, swapDtrRts); // Chip out of reset
+    Thread.Sleep(50);
+}
+
+bool TrySyncAfter(Action resetSequence)
+{
+    try
+    {
+        resetSequence?.Invoke();
+        serial.DiscardInBuffer();
+        serial.DiscardOutBuffer();
+    }
+    catch (Exception ex)
+    {
+        addLogLine("Reset sequence exception: " + ex.Message);
+    }
+    return Sync();
+}
+
 
         public bool Connect()
         {
-            logger.setState("Connecting to ESP32...", Color.Yellow);
-            addLogLine("Attempting to connect to ESP32...");
-            if(!openPort())
-            {
-                return false;
-            }
+logger.setState("Connecting to ESP32...", Color.Yellow);
+addLogLine("Attempting to connect to ESP32...");
+if (!openPort())
+{
+    return false;
+}
 
-            // Reset strategy: DTR=0, RTS=1 -> DTR=1, RTS=0
-            serial.DtrEnable = false;
-            serial.RtsEnable = true;
-            Thread.Sleep(100);
-            serial.DtrEnable = true;
-            serial.RtsEnable = false;
-            Thread.Sleep(500);
+// Start from an idle/neutral state (esptool does this implicitly before reset sequences).
+try
+{
+    serial.DtrEnable = false;
+    serial.RtsEnable = false;
+    Thread.Sleep(50);
+    serial.DiscardInBuffer();
+    serial.DiscardOutBuffer();
+}
+catch { }
 
-            if (Sync())
-            {
-                logger.setState("ESP32 synced", Color.LightGreen);
-                addSuccess(Environment.NewLine + "Synced with ESP32!" + Environment.NewLine);
-                if (!SpiAttach())
-                {
-                    addErrorLine("Failed to configure SPI pins.");
-                    return false;
-                }
-                return true;
-            }
-            return false; // Placeholder return
+bool synced = false;
+
+// 1) ClassicReset (esptool default-reset)
+addLogLine("Reset-to-bootloader: trying ClassicReset (default DTR/RTS)...");
+synced = TrySyncAfter(() => ResetToBootloaderClassic(false));
+
+if (!synced)
+{
+    addLogLine("Reset-to-bootloader: trying ClassicReset (swapped DTR/RTS)...");
+    synced = TrySyncAfter(() => ResetToBootloaderClassic(true));
+}
+
+// 2) USBJTAGSerialReset (esptool usb-reset)
+if (!synced)
+{
+    addLogLine("Reset-to-bootloader: trying USBJTAGSerialReset (default DTR/RTS)...");
+    synced = TrySyncAfter(() => ResetToBootloaderUSBJTAGSerial(false));
+}
+
+if (!synced)
+{
+    addLogLine("Reset-to-bootloader: trying USBJTAGSerialReset (swapped DTR/RTS)...");
+    synced = TrySyncAfter(() => ResetToBootloaderUSBJTAGSerial(true));
+}
+
+// 3) No reset (esptool --before no-reset)
+if (!synced)
+{
+    addLogLine("Reset-to-bootloader: trying no-reset (no DTR/RTS toggles)...");
+    try
+    {
+        serial.DtrEnable = false;
+        serial.RtsEnable = false;
+        Thread.Sleep(50);
+        serial.DiscardInBuffer();
+        serial.DiscardOutBuffer();
+    }
+    catch { }
+
+    synced = Sync();
+}
+
+if (synced)
+{
+    logger.setState("ESP32 synced", Color.LightGreen);
+    addSuccess(Environment.NewLine + "Synced with ESP32!" + Environment.NewLine);
+    if (!SpiAttach())
+    {
+        addErrorLine("Failed to configure SPI pins.");
+        return false;
+    }
+    return true;
+}
+
+addErrorLine("Failed to sync with ESP32.");
+return false;
+
+
         }
 
 
