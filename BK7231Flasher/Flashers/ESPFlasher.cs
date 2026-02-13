@@ -7,6 +7,9 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Diagnostics;
+using System.Reflection;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
 
 namespace BK7231Flasher
 {
@@ -44,6 +47,179 @@ namespace BK7231Flasher
         bool isStub = false;
         byte[] _slipBuf = new byte[4096];
         public bool LegacyMode { get; set; } = false;
+
+        // ---- ESP32 auto-reset/download-mode helpers (esptool-aligned) ----
+        // On Windows (usbser.sys in particular), some USB-UART paths don't reliably propagate RTS
+        // changes unless a "set control line state" request is also sent for DTR. esptool works
+        // around this by re-sending DTR state after every RTS change.
+        //
+        // .NET SerialPort may short-circuit no-op DTR sets, so when possible we use
+        // EscapeCommFunction() directly to force the control-line update even if the state is unchanged.
+        private bool _dtrState = false;
+        private bool _rtsState = false;
+        private bool _haveWin32Handle = false;
+        private IntPtr _comHandle = IntPtr.Zero;
+
+        private const uint SETRTS = 3;
+        private const uint CLRRTS = 4;
+        private const uint SETDTR = 5;
+        private const uint CLRDTR = 6;
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool EscapeCommFunction(IntPtr hFile, uint dwFunc);
+
+        private void RefreshComHandle()
+        {
+            _haveWin32Handle = false;
+            _comHandle = IntPtr.Zero;
+
+            try
+            {
+                if (serial == null || !serial.IsOpen)
+                    return;
+
+                var bs = serial.BaseStream;
+                if (bs == null)
+                    return;
+
+                SafeFileHandle sfh = null;
+                var t = bs.GetType();
+
+                // .NET Framework SerialStream has a private SafeFileHandle field (commonly "_handle")
+                var prop = t.GetProperty("SafeFileHandle", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                if (prop != null)
+                {
+                    sfh = prop.GetValue(bs, null) as SafeFileHandle;
+                }
+
+                if (sfh == null)
+                {
+                    var fld = t.GetField("_handle", BindingFlags.Instance | BindingFlags.NonPublic)
+                              ?? t.GetField("handle", BindingFlags.Instance | BindingFlags.NonPublic);
+                    if (fld != null)
+                    {
+                        sfh = fld.GetValue(bs) as SafeFileHandle;
+                    }
+                }
+
+                if (sfh != null && !sfh.IsInvalid)
+                {
+                    _comHandle = sfh.DangerousGetHandle();
+                    _haveWin32Handle = _comHandle != IntPtr.Zero;
+                }
+            }
+            catch
+            {
+                _haveWin32Handle = false;
+                _comHandle = IntPtr.Zero;
+            }
+        }
+
+        private void SetDTR(bool state)
+        {
+            _dtrState = state;
+
+            if (serial == null)
+                return;
+
+            if (_haveWin32Handle)
+            {
+                EscapeCommFunction(_comHandle, state ? SETDTR : CLRDTR);
+                return;
+            }
+
+            serial.DtrEnable = state;
+        }
+
+        private void SetRTS(bool state)
+        {
+            _rtsState = state;
+
+            if (serial == null)
+                return;
+
+            if (_haveWin32Handle)
+            {
+                EscapeCommFunction(_comHandle, state ? SETRTS : CLRRTS);
+
+                // Match esptool's usbser.sys workaround: re-send DTR state after RTS change
+                EscapeCommFunction(_comHandle, _dtrState ? SETDTR : CLRDTR);
+                return;
+            }
+
+            serial.RtsEnable = state;
+
+            // Best-effort fallback: re-apply current DTR state after RTS change
+            // (Some stacks only emit a "control line state" update on a DTR call.)
+            try
+            {
+                serial.DtrEnable = serial.DtrEnable;
+            }
+            catch { }
+        }
+
+        // esptool ClassicReset: D0|R1|W0.1|D1|R0|W0.05|D0
+        private void DoClassicReset()
+        {
+            SetDTR(false);   // IO0=HIGH
+            SetRTS(true);    // EN=LOW
+            Thread.Sleep(100);
+            SetDTR(true);    // IO0=LOW
+            SetRTS(false);   // EN=HIGH
+            Thread.Sleep(50);
+            SetDTR(false);   // IO0=HIGH, done
+        }
+
+        // esptool USBJTAGSerialReset (for ESP32-S3/C3 etc when using USB-Serial-JTAG)
+        private void DoUSBJTAGSerialReset()
+        {
+            SetRTS(false);
+            SetDTR(false);   // idle
+            Thread.Sleep(100);
+
+            SetDTR(true);    // set IO0
+            SetRTS(false);
+            Thread.Sleep(100);
+
+            // Reset. Calls inverted to go through (1,1) instead of (0,0)
+            SetRTS(true);
+            SetDTR(false);
+            SetRTS(true);    // RTS set as Windows only propagates DTR on RTS setting
+            Thread.Sleep(100);
+
+            SetDTR(false);
+            SetRTS(false);   // chip out of reset
+        }
+
+        private bool TryReset(Action resetAction)
+        {
+            for (int attempt = 0; attempt < 3; attempt++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                try
+                {
+                    if (serial == null || !serial.IsOpen)
+                    {
+                        if (!openPort())
+                            return false;
+                    }
+
+                    RefreshComHandle();
+                    resetAction();
+                    return true;
+                }
+                catch (Exception ex) when (ex is IOException || ex is InvalidOperationException)
+                {
+                    try { closePort(); } catch { }
+                    serial = null;
+                    Thread.Sleep(500);
+                }
+            }
+            return false;
+        }
+        // ---- end helpers ----
+
 
         public ESPFlasher(CancellationToken ct) : base(ct)
         {
@@ -109,22 +285,39 @@ namespace BK7231Flasher
                     // ESP32 ROM bootloader always starts at 115200.
                     // We sync at 115200, then change baud after stub upload.
                     serial = new SerialPort(serialName, 115200);
+
+                    // Ensure modem-control lines start in a neutral state *before* opening the port.
+                    // Some USB-UART drivers assert DTR/RTS on open unless explicitly configured.
+                    serial.Handshake = Handshake.None;
+                    serial.DtrEnable = false;
+                    serial.RtsEnable = false;
+
                     serial.ReadBufferSize = 32768;
                     serial.Open();
+
+                    // Cache a native handle for reliable DTR/RTS toggling (usbser.sys quirk)
+                    RefreshComHandle();
+
+                    // Keep our cached state consistent with the intended neutral state
+                    _dtrState = false;
+                    _rtsState = false;
+
+                    // Apply neutral state using our helpers (ensures any driver defaults are overridden)
+                    SetDTR(false);
+                    SetRTS(false);
                 }
                 else
                 {
                     // Reset baud to 115200 for ROM bootloader sync
                     // (port may still be at a higher baud from a previous operation)
+                    serial.Handshake = Handshake.None;
                     serial.BaudRate = 115200;
-                }
-                // Ensure handshake doesn't override RTS and start from a neutral line state (matches esptool defaults).
-serial.Handshake = Handshake.None;
-serial.DtrEnable = false;
-serial.RtsEnable = false;
-Thread.Sleep(20);
 
-serial.DiscardInBuffer();
+                    // Refresh handle in case the device was re-enumerated
+                    RefreshComHandle();
+                }
+
+                serial.DiscardInBuffer();
                 serial.DiscardOutBuffer();
                 return true;
             }
@@ -818,182 +1011,79 @@ serial.DiscardInBuffer();
                  return null;
              }
         }
-// Reset helpers: match esptool reset strategies as closely as SerialPort allows on Windows.
-// esptool reference: esptool/reset.py (ClassicReset, USBJTAGSerialReset)
-void SetControlLineDTR(bool state, bool swapDtrRts)
-{
-    // Default wiring: DTR -> IO0, RTS -> EN. Some adapters swap these.
-    if (!swapDtrRts)
-    {
-        serial.DtrEnable = state;
-    }
-    else
-    {
-        serial.RtsEnable = state;
-    }
-}
-
-void SetControlLineRTS(bool state, bool swapDtrRts)
-{
-    if (!swapDtrRts)
-    {
-        serial.RtsEnable = state;
-    }
-    else
-    {
-        serial.DtrEnable = state;
-    }
-
-    // Work-around for some Windows usbser.sys paths: "touch" the other line so the
-    // set-control-line-state request is sent with the updated RTS state (mirrors esptool).
-    try
-    {
-        if (!swapDtrRts)
-            serial.DtrEnable = serial.DtrEnable;
-        else
-            serial.RtsEnable = serial.RtsEnable;
-    }
-    catch { }
-}
-
-void ResetToBootloaderClassic(bool swapDtrRts)
-{
-    // esptool ClassicReset: D0|R1|W0.1|D1|R0|W0.05|D0
-    SetControlLineDTR(false, swapDtrRts); // IO0=HIGH
-    SetControlLineRTS(true, swapDtrRts);  // EN=LOW (reset asserted)
-    Thread.Sleep(100);
-
-    SetControlLineDTR(true, swapDtrRts);  // IO0=LOW
-    SetControlLineRTS(false, swapDtrRts); // EN=HIGH (release reset)
-    Thread.Sleep(50);
-
-    SetControlLineDTR(false, swapDtrRts); // IO0=HIGH (done)
-    Thread.Sleep(50);
-}
-
-void ResetToBootloaderUSBJTAGSerial(bool swapDtrRts)
-{
-    // esptool USBJTAGSerialReset: used for ESP chips connected via USB-JTAG-Serial peripheral.
-    // This matters for some ESP32-C3/S3 variants where ClassicReset doesn't work reliably.
-    SetControlLineRTS(false, swapDtrRts);
-    SetControlLineDTR(false, swapDtrRts);
-    Thread.Sleep(100);
-
-    SetControlLineDTR(true, swapDtrRts); // Set IO0
-    SetControlLineRTS(false, swapDtrRts);
-    Thread.Sleep(100);
-
-    // Reset. Calls inverted to go through (1,1) instead of (0,0)
-    SetControlLineRTS(true, swapDtrRts);
-    SetControlLineDTR(false, swapDtrRts);
-
-    // RTS set as Windows only propagates DTR on RTS setting (mirrors esptool).
-    SetControlLineRTS(true, swapDtrRts);
-    Thread.Sleep(100);
-
-    SetControlLineDTR(false, swapDtrRts);
-    SetControlLineRTS(false, swapDtrRts); // Chip out of reset
-    Thread.Sleep(50);
-}
-
-bool TrySyncAfter(Action resetSequence)
-{
-    try
-    {
-        resetSequence?.Invoke();
-        serial.DiscardInBuffer();
-        serial.DiscardOutBuffer();
-    }
-    catch (Exception ex)
-    {
-        addLogLine("Reset sequence exception: " + ex.Message);
-    }
-    return Sync();
-}
-
 
         public bool Connect()
         {
-logger.setState("Connecting to ESP32...", Color.Yellow);
-addLogLine("Attempting to connect to ESP32...");
-if (!openPort())
-{
-    return false;
-}
+            logger.setState("Connecting to ESP32...", Color.Yellow);
+            addLogLine("Attempting to connect to ESP32...");
+            if (!openPort())
+            {
+                return false;
+            }
 
-// Start from an idle/neutral state (esptool does this implicitly before reset sequences).
-try
-{
-    serial.DtrEnable = false;
-    serial.RtsEnable = false;
-    Thread.Sleep(50);
-    serial.DiscardInBuffer();
-    serial.DiscardOutBuffer();
-}
-catch { }
+            // Reset into ROM bootloader (download mode). esptool chooses a reset strategy based on
+            // the physical transport:
+            //  - ClassicReset: external USB-UART with EN+IO0 wired to RTS+DTR
+            //  - USBJTAGSerialReset: native USB-Serial-JTAG peripheral (ESP32-S3/C3/etc)
+            //
+            // We try ClassicReset first, then fall back to USBJTAGSerialReset if SYNC fails.
+            addLogLine("Resetting into download mode (ClassicReset)...");
+            if (!TryReset(() => DoClassicReset()))
+            {
+                addErrorLine("Reset attempt failed (ClassicReset).");
+                return false;
+            }
 
-bool synced = false;
+            try
+            {
+                serial.DiscardInBuffer();
+                serial.DiscardOutBuffer();
+            }
+            catch { }
+            Thread.Sleep(50);
 
-// 1) ClassicReset (esptool default-reset)
-addLogLine("Reset-to-bootloader: trying ClassicReset (default DTR/RTS)...");
-synced = TrySyncAfter(() => ResetToBootloaderClassic(false));
+            if (!Sync())
+            {
+                addLogLine("");
+                addWarningLine("SYNC failed after ClassicReset. Trying USB-JTAG-Serial reset...");
 
-if (!synced)
-{
-    addLogLine("Reset-to-bootloader: trying ClassicReset (swapped DTR/RTS)...");
-    synced = TrySyncAfter(() => ResetToBootloaderClassic(true));
-}
+                try { closePort(); } catch { }
+                serial = null;
 
-// 2) USBJTAGSerialReset (esptool usb-reset)
-if (!synced)
-{
-    addLogLine("Reset-to-bootloader: trying USBJTAGSerialReset (default DTR/RTS)...");
-    synced = TrySyncAfter(() => ResetToBootloaderUSBJTAGSerial(false));
-}
+                if (!openPort())
+                {
+                    return false;
+                }
 
-if (!synced)
-{
-    addLogLine("Reset-to-bootloader: trying USBJTAGSerialReset (swapped DTR/RTS)...");
-    synced = TrySyncAfter(() => ResetToBootloaderUSBJTAGSerial(true));
-}
+                if (!TryReset(() => DoUSBJTAGSerialReset()))
+                {
+                    addErrorLine("Reset attempt failed (USB-JTAG-Serial).");
+                    return false;
+                }
 
-// 3) No reset (esptool --before no-reset)
-if (!synced)
-{
-    addLogLine("Reset-to-bootloader: trying no-reset (no DTR/RTS toggles)...");
-    try
-    {
-        serial.DtrEnable = false;
-        serial.RtsEnable = false;
-        Thread.Sleep(50);
-        serial.DiscardInBuffer();
-        serial.DiscardOutBuffer();
-    }
-    catch { }
+                try
+                {
+                    serial.DiscardInBuffer();
+                    serial.DiscardOutBuffer();
+                }
+                catch { }
+                Thread.Sleep(50);
 
-    synced = Sync();
-}
+                if (!Sync())
+                {
+                    return false;
+                }
+            }
 
-if (synced)
-{
-    logger.setState("ESP32 synced", Color.LightGreen);
-    addSuccess(Environment.NewLine + "Synced with ESP32!" + Environment.NewLine);
-    if (!SpiAttach())
-    {
-        addErrorLine("Failed to configure SPI pins.");
-        return false;
-    }
-    return true;
-}
-
-addErrorLine("Failed to sync with ESP32.");
-return false;
-
-
-        }
-
-
-        bool SpiAttach()
+            logger.setState("ESP32 synced", Color.LightGreen);
+            addSuccess(Environment.NewLine + "Synced with ESP32!" + Environment.NewLine);
+            if (!SpiAttach())
+            {
+                addErrorLine("Failed to configure SPI pins.");
+                return false;
+            }
+            return true;
+        }bool SpiAttach()
         {
              try
              {
