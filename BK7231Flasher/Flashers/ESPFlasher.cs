@@ -50,6 +50,43 @@ namespace BK7231Flasher
         // is implemented in a separate class to keep ESPFlasher focused on the ROM protocol.
         private readonly Esp32SerialReset _reset = new Esp32SerialReset();
 
+/// <summary>
+/// Execute a reset action with a few retries. Serial ports on Windows can transiently fail
+/// around reset (device re-enumeration, driver hiccups). This mirrors the "working" implementation
+/// behaviour without embedding platform-specific code here.
+/// </summary>
+private bool TryReset(Action resetAction)
+{
+    for (int attempt = 0; attempt < 3; attempt++)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        try
+        {
+            if (serial == null || !serial.IsOpen)
+            {
+                if (!openPort())
+                    return false;
+            }
+
+            // Refresh any cached handle/state used by the reset helper.
+            _reset.Bind(serial);
+            _reset.RefreshComHandle();
+
+            resetAction();
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException || ex is InvalidOperationException)
+        {
+            try { closePort(); } catch { }
+            serial = null;
+            Thread.Sleep(500);
+        }
+    }
+    return false;
+}
+
+
 
 
         public ESPFlasher(CancellationToken ct) : base(ct)
