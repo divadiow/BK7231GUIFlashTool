@@ -51,6 +51,9 @@ jobs:
           dir BK7231Flasher/BuildOutput/Release
 
   release:
+    permissions:
+      contents: write
+      pull-requests: read
     needs: build
     runs-on: windows-latest
     if: github.ref == 'refs/heads/main'
@@ -94,9 +97,7 @@ jobs:
         with:
           tag_name: v${{ github.run_number }}
           name: BK7231GUIFlashTool build ${{ github.run_number }}
-          body: |
-            Automated release for BK7231GUIFlashTool.
-            Includes the latest .exe, .dll files, and loaders directory.
+          generate_release_notes: true
           draft: false
           prerelease: false
           files: release/BK7231GUIFlashTool-build-${{ github.run_number }}.zip
