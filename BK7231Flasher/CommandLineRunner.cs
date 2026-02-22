@@ -5,6 +5,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading;
 
 namespace BK7231Flasher
@@ -30,6 +31,7 @@ namespace BK7231Flasher
             CustomRead,
             CustomWrite,
             Test,
+            TuyaConfig,
             Help
         }
 
@@ -95,55 +97,81 @@ namespace BK7231Flasher
             string outputName = "cliBackup";
             string writeFile = null;
             bool legacyMode = false;
+            string tuyaInputFile = null;
+            string tuyaOutputFile = null;
 
-            // Parse arguments
+            // Parse arguments (esptool-style + legacy aliases)
             for (int i = 0; i < args.Length; i++)
             {
                 string arg = args[i].ToLowerInvariant();
                 switch (arg)
                 {
-                    case "-read":
+                    // --- Commands (esptool-style positional) ---
+                    case "fread":       // full flash read (no esptool equivalent)
+                    case "-read":       // legacy alias
                         operation = CliOperation.Read;
                         break;
-                    case "-write":
+                    case "fwrite":      // full flash write (no esptool equivalent)
+                    case "-write":      // legacy alias
                         operation = CliOperation.Write;
                         if (i + 1 < args.Length && !args[i + 1].StartsWith("-"))
                             writeFile = args[++i];
                         break;
-                    case "-cread":
+                    case "read_flash":  // esptool read_flash
+                    case "-cread":      // legacy alias
                         operation = CliOperation.CustomRead;
                         break;
-                    case "-test":
-                        operation = CliOperation.Test;
-                        break;
-                    case "-cwrite":
+                    case "write_flash": // esptool write_flash
+                    case "-cwrite":     // legacy alias
                         operation = CliOperation.CustomWrite;
                         if (i + 1 < args.Length && !args[i + 1].StartsWith("-"))
                             writeFile = args[++i];
                         break;
-                    case "-port":
+                    case "test":        // write/read/verify test (no esptool equivalent)
+                    case "-test":       // legacy alias
+                        operation = CliOperation.Test;
+                        break;
+                    case "tuyaconfig":  // extract Tuya config from binary dump (offline, no serial)
+                        operation = CliOperation.TuyaConfig;
+                        if (i + 1 < args.Length && !args[i + 1].StartsWith("-"))
+                            tuyaInputFile = args[++i];
+                        if (i + 1 < args.Length && !args[i + 1].StartsWith("-"))
+                            tuyaOutputFile = args[++i];
+                        break;
+
+                    // --- Options (esptool-style double-dash + legacy) ---
+                    case "--port":
+                    case "-p":
+                    case "-port":       // legacy alias
                         if (i + 1 < args.Length) port = args[++i];
                         break;
-                    case "-baud":
+                    case "--baud":
+                    case "-b":
+                    case "-baud":       // legacy alias
                         if (i + 1 < args.Length) int.TryParse(args[++i], out baud);
                         break;
-                    case "-chip":
+                    case "--chip":
+                    case "-chip":       // legacy alias
                         if (i + 1 < args.Length) chipName = args[++i];
                         break;
-                    case "-ofs":
+                    case "--addr":
+                    case "-ofs":        // legacy alias
                         if (i + 1 < args.Length) ofs = ParseInt(args[++i]);
                         break;
-                    case "-len":
+                    case "--size":
+                    case "-len":        // legacy alias
                         if (i + 1 < args.Length) len = ParseInt(args[++i]);
                         break;
-                    case "-out":
+                    case "--out":
+                    case "-out":        // legacy alias
                         if (i + 1 < args.Length) outputName = args[++i];
                         break;
-                    case "-legacy":
+                    case "--no-stub":
+                    case "-legacy":     // legacy alias
                         legacyMode = true;
                         break;
-                    case "-help":
                     case "--help":
+                    case "-help":
                     case "-h":
                     case "/?":
                         operation = CliOperation.Help;
@@ -158,6 +186,21 @@ namespace BK7231Flasher
             {
                 PrintHelp();
                 Environment.Exit(operation == CliOperation.Help ? 0 : 1);
+                return;
+            }
+
+            // TuyaConfig is an offline file-only operation — no serial port or chip needed.
+            if (operation == CliOperation.TuyaConfig)
+            {
+                if (string.IsNullOrEmpty(tuyaInputFile) || string.IsNullOrEmpty(tuyaOutputFile))
+                {
+                    Console.Error.WriteLine("Error: tuyaconfig requires two arguments: <input.bin> <output.json>");
+                    Console.Error.WriteLine("Usage: BK7231Flasher.exe tuyaconfig <input.bin> <output.json>");
+                    Environment.Exit(1);
+                    return;
+                }
+                int tuyaExitCode = DoTuyaConfig(tuyaInputFile, tuyaOutputFile);
+                Environment.Exit(tuyaExitCode);
                 return;
             }
 
@@ -179,7 +222,7 @@ namespace BK7231Flasher
                     }
                     else
                     {
-                        Console.Error.WriteLine("Error: -port is required. Use -help for usage.");
+                        Console.Error.WriteLine("Error: --port is required. Use --help for usage.");
                         Environment.Exit(1);
                         return;
                     }
@@ -188,7 +231,7 @@ namespace BK7231Flasher
 
             if (string.IsNullOrEmpty(chipName))
             {
-                Console.Error.WriteLine("Error: -chip is required. Use -help for usage.");
+                Console.Error.WriteLine("Error: --chip is required. Use --help for usage.");
                 Environment.Exit(1);
                 return;
             }
@@ -202,7 +245,7 @@ namespace BK7231Flasher
 
             if ((operation == CliOperation.CustomRead || operation == CliOperation.CustomWrite || operation == CliOperation.Test) && (ofs < 0 || len <= 0))
             {
-                Console.Error.WriteLine("Error: -ofs and -len are required for custom read/write/test operations. Use -help for usage.");
+                Console.Error.WriteLine("Error: --addr and --size are required for read_flash/write_flash/test operations. Use --help for usage.");
                 Environment.Exit(1);
                 return;
             }
@@ -488,6 +531,54 @@ namespace BK7231Flasher
             }
         }
 
+        static int DoTuyaConfig(string inputFile, string outputFile)
+        {
+            if (!File.Exists(inputFile))
+            {
+                Console.Error.WriteLine($"Error: Input file not found: {inputFile}");
+                return 1;
+            }
+
+            Console.WriteLine($"Extracting Tuya config from: {inputFile}");
+
+            try
+            {
+                var tc = new TuyaConfig();
+                if (tc.fromFile(inputFile) != false)
+                {
+                    if (tc.isLastBinaryOBKConfig())
+                    {
+                        Console.Error.WriteLine("Error: The file looks like an OBK config, not a Tuya one.");
+                        return 1;
+                    }
+                    if (tc.isLastBinaryFullOf0xff())
+                    {
+                        Console.Error.WriteLine("Error: The binary is an erased flash sector (full of 0xFF).");
+                        return 1;
+                    }
+                    Console.Error.WriteLine("Error: Failed to decrypt Tuya config. See messages above for details.");
+                    return 1;
+                }
+
+                if (tc.extractKeys() != false)
+                {
+                    Console.Error.WriteLine("Error: Failed to extract Tuya keys from decrypted data.");
+                    return 1;
+                }
+
+                string json = tc.getKeysAsJSON();
+                File.WriteAllText(outputFile, json, Encoding.UTF8);
+
+                Console.WriteLine($"Tuya config JSON written to: {outputFile}");
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"Error: {ex.Message}");
+                return 1;
+            }
+        }
+
         static BaseFlasher CreateFlasher(BKType chipType, CancellationToken ct)
         {
             switch (chipType)
@@ -537,32 +628,37 @@ namespace BK7231Flasher
         {
             Console.WriteLine("BK7231 GUI Flash Tool - Command Line Mode");
             Console.WriteLine();
-            Console.WriteLine("Usage: BK7231Flasher.exe <operation> [options]");
+            Console.WriteLine("Usage: BK7231Flasher.exe [options] <command> [command options]");
             Console.WriteLine();
-            Console.WriteLine("Operations:");
-            Console.WriteLine("  -read                Full flash read (backup)");
-            Console.WriteLine("  -write <file.bin>    Write firmware file to flash");
-            Console.WriteLine("  -cread               Custom read (requires -ofs and -len)");
-            Console.WriteLine("  -cwrite <file.bin>   Custom write (requires -ofs and -len)");
-            Console.WriteLine("  -test                Run write/read/verify test (requires -ofs and -len)");
+            Console.WriteLine("Commands:");
+            Console.WriteLine("  read_flash             Read flash region (requires --addr and --size)");
+            Console.WriteLine("  write_flash <file.bin>  Write to flash region (requires --addr and --size)");
+            Console.WriteLine("  fread                  Full flash read (backup entire chip)");
+            Console.WriteLine("  fwrite <file.bin>      Full flash write (write entire firmware)");
+            Console.WriteLine("  test                   Write/read/verify test (requires --addr and --size)");
+            Console.WriteLine("  tuyaconfig <in> <out>  Extract Tuya config JSON from binary dump (offline)");
             Console.WriteLine();
             Console.WriteLine("Required Options:");
-            Console.WriteLine("  -port <COM3>         Serial port (not needed for SPI chips)");
-            Console.WriteLine("  -chip <BK7231N>      Chip type");
+            Console.WriteLine("  --port, -p <COM3>      Serial port (not needed for SPI chips)");
+            Console.WriteLine("  --chip <BK7231N>       Chip type");
             Console.WriteLine();
             Console.WriteLine("Optional:");
-            Console.WriteLine("  -baud <921600>       Baud rate (default: 921600)");
-            Console.WriteLine("  -ofs <0x11000>       Start offset (hex or decimal, for -cread/-cwrite)");
-            Console.WriteLine("  -len <0x1000>        Length in bytes (hex or decimal, for -cread/-cwrite)");
-            Console.WriteLine("  -out <name>          Output name for backup (default: cliBackup)");
-            Console.WriteLine("  -legacy              Use legacy (ROM-only) mode for ESP32 (disable stub flasher)");
+            Console.WriteLine("  --baud, -b <921600>    Baud rate (default: 921600)");
+            Console.WriteLine("  --addr <0x11000>       Start address (hex or decimal, for read_flash/write_flash)");
+            Console.WriteLine("  --size <0x1000>        Length in bytes (hex or decimal, for read_flash/write_flash)");
+            Console.WriteLine("  --out <name>           Output name for backup (default: cliBackup)");
+            Console.WriteLine("  --no-stub              Use legacy (ROM-only) mode for ESP32 (disable stub flasher)");
             Console.WriteLine();
             Console.WriteLine("Examples:");
-            Console.WriteLine("  BK7231Flasher.exe -read -port COM3 -chip BK7231N -out mybackup");
-            Console.WriteLine("  BK7231Flasher.exe -write firmware.bin -port COM3 -chip BK7231N");
-            Console.WriteLine("  BK7231Flasher.exe -cread -port COM3 -chip BK7231N -ofs 0x11000 -len 0x1000");
-            Console.WriteLine("  BK7231Flasher.exe -cwrite data.bin -port COM3 -chip BK7231N -ofs 0x0 -len 0x1000");
-            Console.WriteLine("  BK7231Flasher.exe -test -port COM3 -chip BK7231N -ofs 0x11000 -len 0x1000");
+            Console.WriteLine("  BK7231Flasher.exe --port COM3 --chip BK7231N fread --out mybackup");
+            Console.WriteLine("  BK7231Flasher.exe --port COM3 --chip BK7231N fwrite firmware.bin");
+            Console.WriteLine("  BK7231Flasher.exe --port COM3 --chip BK7231N read_flash --addr 0x11000 --size 0x1000");
+            Console.WriteLine("  BK7231Flasher.exe --port COM3 --chip BK7231N write_flash data.bin --addr 0x0 --size 0x1000");
+            Console.WriteLine("  BK7231Flasher.exe --port COM3 --chip BK7231N test --addr 0x11000 --size 0x1000");
+            Console.WriteLine("  BK7231Flasher.exe tuyaconfig firmware_dump.bin tuya_config.json");
+            Console.WriteLine();
+            Console.WriteLine("Legacy aliases (backward compatible):");
+            Console.WriteLine("  -read, -write, -cread, -cwrite, -test, -port, -baud, -chip, -ofs, -len, -out, -legacy");
             Console.WriteLine();
             Console.WriteLine("Available chip types:");
             foreach (var t in Enum.GetValues(typeof(BKType)))
