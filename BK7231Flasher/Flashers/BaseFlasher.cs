@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Drawing;
 using System.IO.Ports;
 using System.Text;
@@ -214,12 +214,16 @@ namespace BK7231Flasher
         {
             return false;
         }
-        public virtual void closePort()
+                public virtual void closePort()
         {
-            if (serial != null)
+            // Make closePort idempotent and safe to call from multiple paths (Stop, cleanup, cancellation callbacks).
+            var sp = serial;
+            serial = null;
+
+            if (sp != null)
             {
-                serial.Close();
-                serial.Dispose();
+                try { if (sp.IsOpen) sp.Close(); } catch { }
+                try { sp.Dispose(); } catch { }
             }
         }
         public virtual void doTestReadWrite(int startSector = 0x000, int sectors = 10)

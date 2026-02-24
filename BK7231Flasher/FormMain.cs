@@ -409,15 +409,19 @@ namespace BK7231Flasher
                 var res = MessageBox.Show("Do you want to interrupt flashing?", "Stop?", MessageBoxButtons.YesNo);
                 if (res == DialogResult.Yes)
                 {
-                    if(worker != null)
+                    if (worker != null)
                     {
-                        cts?.Cancel();
+                        // Cancel worker token (also triggers BaseFlasher's XMODEM cancel + closePort callback).
+                        try { cts?.Cancel(); } catch { }
+
+                        // Best-effort immediate release (if port is already open).
+                        try { flasher?.closePort(); } catch { }
+
                         //worker.Abort();
                     }
-                    worker = null;
-                    //setButtonReadLabel(label_startRead);
-                    setButtonStates(true);
-                    setState("Interrupted by user.", Color.Yellow);
+
+                    // Keep UI disabled until the worker thread actually exits.
+                    setState("Stopping...", Color.Yellow);
                 }
                 return false;
             }
@@ -467,13 +471,21 @@ namespace BK7231Flasher
         }
         void clearUp()
         {
-            if (flasher != null)
+            var localFlasher = flasher;
+            if (localFlasher == null)
             {
-                cts.Cancel();
-                flasher.Dispose();
-                //flasher.closePort();
-                flasher = null;
+                return;
             }
+
+            // Prevent other code from using the flasher while we tear it down.
+            flasher = null;
+
+            // Trigger cancellation callbacks (XMODEM cancel + closePort in BaseFlasher) but never let exceptions break cleanup.
+            try { cts?.Cancel(); } catch { }
+
+            // Best-effort: close and dispose deterministically.
+            try { localFlasher.closePort(); } catch { }
+            try { localFlasher.Dispose(); } catch { }
         }
         
         void createFlasher()
@@ -1511,20 +1523,90 @@ namespace BK7231Flasher
             startWorkerThread(readThread, customRead);
         }
         
-        void startWorkerThread(Action<object> ts, object customArg)
+                void startWorkerThread(Action<object> ts, object customArg)
         {
             cts?.Dispose();
             cts = new CancellationTokenSource();
+
             setButtonStates(false);
-            worker = new Task(ts, customArg, cts.Token);
+
+            var token = cts.Token;
+            worker = new Task(() =>
+            {
+                try
+                {
+                    ts(customArg);
+                }
+                catch (OperationCanceledException)
+                {
+                    // Expected when Stop is pressed; do not treat as an error.
+                }
+                catch (Exception ex)
+                {
+                    try { addLog("Unhandled exception in worker thread: " + ex + Environment.NewLine, Color.Red); } catch { }
+                    try { setState("Operation failed. See log.", Color.Red); } catch { }
+                }
+                finally
+                {
+                    // Always attempt to release the serial port and re-enable UI (even if the worker threw).
+                    try { clearUp(); } catch { }
+
+                    worker = null;
+
+                    try
+                    {
+                        if (!IsDisposed && IsHandleCreated)
+                        {
+                            BeginInvoke((MethodInvoker)delegate { setButtonStates(true); });
+                        }
+                    }
+                    catch { }
+                }
+            }, token);
+
             worker.Start();
         }
-        void startWorkerThread(Action ts)
+                void startWorkerThread(Action ts)
         {
             cts?.Dispose();
             cts = new CancellationTokenSource();
+
             setButtonStates(false);
-            worker = new Task(ts, cts.Token);
+
+            var token = cts.Token;
+            worker = new Task(() =>
+            {
+                try
+                {
+                    ts();
+                }
+                catch (OperationCanceledException)
+                {
+                    // Expected when Stop is pressed; do not treat as an error.
+                }
+                catch (Exception ex)
+                {
+                    try { addLog("Unhandled exception in worker thread: " + ex + Environment.NewLine, Color.Red); } catch { }
+                    try { setState("Operation failed. See log.", Color.Red); } catch { }
+                }
+                finally
+                {
+                    // Always attempt to release the serial port and re-enable UI (even if the worker threw).
+                    try { clearUp(); } catch { }
+
+                    worker = null;
+
+                    try
+                    {
+                        if (!IsDisposed && IsHandleCreated)
+                        {
+                            BeginInvoke((MethodInvoker)delegate { setButtonStates(true); });
+                        }
+                    }
+                    catch { }
+                }
+            }, token);
+
             worker.Start();
         }
         private void buttonStartScan_Click(object sender, EventArgs e)
@@ -1541,23 +1623,61 @@ namespace BK7231Flasher
         {
             if (e.Button == MouseButtons.Right)
             {
-                ListViewItem selectedItem = listView1.FocusedItem;
+                ListViewHitTestInfo hit = listView1.HitTest(e.Location);
+                ListViewItem selectedItem = hit.Item;
+                if (selectedItem == null)
+                {
+                    return;
+                }
+
+                // Ensure the item under the cursor is the active selection/focus for context-menu actions
+                if (!selectedItem.Selected)
+                {
+                    listView1.SelectedItems.Clear();
+                    selectedItem.Selected = true;
+                }
+                listView1.FocusedItem = selectedItem;
+
+                OBKDeviceAPI dev = selectedItem.Tag as OBKDeviceAPI;
+                if (dev == null)
+                {
+                    return;
+                }
+
 
                 ContextMenuStrip contextMenu = new ContextMenuStrip();
 
                 ToolStripMenuItem openPageMenuItem = new ToolStripMenuItem("Open page");
                 openPageMenuItem.Click += (s, args) =>
                 {
-                    string url = selectedItem.SubItems[1].Text; 
-                    System.Diagnostics.Process.Start("http://"+url);
+                    try
+                    {
+                        string url = (selectedItem.SubItems.Count > 1) ? selectedItem.SubItems[1].Text : null;
+                        if (string.IsNullOrWhiteSpace(url))
+                            return;
+                        System.Diagnostics.Process.Start("http://" + url);
+                    }
+                    catch (Exception ex)
+                    {
+                        addLog("Open page failed: " + ex.Message);
+                    }
                 };
                 contextMenu.Items.Add(openPageMenuItem);
 
                 ToolStripMenuItem copyUrlMenuItem = new ToolStripMenuItem("Copy URL");
                 copyUrlMenuItem.Click += (s, args) =>
                 {
-                    string url = selectedItem.SubItems[1].Text; 
-                    Clipboard.SetText(url);
+                    try
+                    {
+                        string url = (selectedItem.SubItems.Count > 1) ? selectedItem.SubItems[1].Text : null;
+                        if (string.IsNullOrWhiteSpace(url))
+                            return;
+                        Clipboard.SetText(url);
+                    }
+                    catch (Exception ex)
+                    {
+                        addLog("Copy URL failed: " + ex.Message);
+                    }
                 };
                 contextMenu.Items.Add(copyUrlMenuItem);
 
@@ -1566,11 +1686,12 @@ namespace BK7231Flasher
                 rebootMenuItem.Click += (s, args) =>
                 {
                     OBKDeviceAPI devo = selectedItem.Tag as OBKDeviceAPI;
-                    devo.sendCmnd("reboot",null);
+                    if (devo == null)
+                        return;
+                    devo.sendCmnd("reboot", null);
                 };
                 contextMenu.Items.Add(rebootMenuItem);
 
-                OBKDeviceAPI dev = selectedItem.Tag as OBKDeviceAPI;
                 for (int i = 0; i < dev.getPowerSlotsCount(); i++)
                 {
                     int slotIndex = i+1; 
@@ -1578,7 +1699,9 @@ namespace BK7231Flasher
                     toggleMenuItem.Click += (s, args) =>
                     {
                         OBKDeviceAPI devo = selectedItem.Tag as OBKDeviceAPI;
-                        devo.sendCmnd("POWER"+ slotIndex + " TOGGLE", null);
+                        if (devo == null)
+                            return;
+                        devo.sendCmnd("POWER" + slotIndex + " TOGGLE", null);
                     };
                     contextMenu.Items.Add(toggleMenuItem);
                 }
@@ -1595,6 +1718,8 @@ namespace BK7231Flasher
                         dimmerMenuItem.Click += (s, args) =>
                         {
                             OBKDeviceAPI devo = selectedItem.Tag as OBKDeviceAPI;
+                            if (devo == null)
+                                return;
                             devo.sendCmnd("Dimmer " + savedI + "", null);
                         };
                         dimmerToolsMenuItem.DropDownItems.Add(dimmerMenuItem);
@@ -1612,6 +1737,8 @@ namespace BK7231Flasher
                         ctMenuItem.Click += (s, args) =>
                         {
                             OBKDeviceAPI devo = selectedItem.Tag as OBKDeviceAPI;
+                            if (devo == null)
+                                return;
                             devo.sendCmnd("CT " + savedI + "", null);
                         };
                         ctToolsMenuItem.DropDownItems.Add(ctMenuItem);
@@ -1631,6 +1758,8 @@ namespace BK7231Flasher
                         colorMenuItem.Click += (s, args) =>
                         {
                             OBKDeviceAPI devo = selectedItem.Tag as OBKDeviceAPI;
+                            if (devo == null)
+                                return;
                             devo.sendCmnd("Color " + code + "", null);
                         };
                         colorToolsMenuItem.DropDownItems.Add(colorMenuItem);

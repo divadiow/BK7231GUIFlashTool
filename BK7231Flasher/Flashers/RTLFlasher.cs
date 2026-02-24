@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
@@ -449,6 +449,11 @@ namespace BK7231Flasher
             return ms.ToArray();
         }
 
+        private bool ShouldCancel()
+        {
+            return isCancelled || cancellationToken.IsCancellationRequested;
+        }
+
         private byte[] ReadBytes(int count)
         {
             byte[] buffer = new byte[count];
@@ -457,6 +462,11 @@ namespace BK7231Flasher
 
             while (offset < count && retries > 0)
             {
+                if (ShouldCancel())
+                {
+                    return null;
+                }
+
                 try
                 {
                     int read = serial.Read(buffer, offset, count - offset);
@@ -470,9 +480,11 @@ namespace BK7231Flasher
                         Thread.Sleep(1);
                     }
                 }
-                catch(TimeoutException)
+                catch (TimeoutException)
                 {
-                    continue;
+                    // Important: decrement retries on timeout; otherwise this can loop forever when the device is silent.
+                    retries--;
+                    Thread.Sleep(1);
                 }
                 catch
                 {
@@ -490,15 +502,14 @@ namespace BK7231Flasher
         {
             while (retries-- > 0)
             {
+                if (ShouldCancel())
+                {
+                    return false;
+                }
+
                 try
                 {
                     int val = serial.ReadByte();
-#if false
-                    if (false)
-                    {
-                        Console.WriteLine("Try " + retries + " wants " + code + " got " + val);
-                    }
-#endif
                     if (val == -1)
                         return false;
                     if ((byte)val == code)
@@ -506,8 +517,11 @@ namespace BK7231Flasher
                 }
                 catch
                 {
+                    if (ShouldCancel())
+                    {
+                        return false;
+                    }
                     Thread.Sleep(1);
-                    // return false;
                 }
             }
             return false;
@@ -515,6 +529,9 @@ namespace BK7231Flasher
 
         private bool WriteCmd(byte[] cmd, byte ack = 0x06)
         {
+            if (ShouldCancel())
+                return false;
+
             try
             {
                 serial.Write(cmd, 0, cmd.Length);
