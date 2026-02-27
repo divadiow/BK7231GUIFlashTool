@@ -1319,8 +1319,17 @@ List<KvEntry> GetVaultEntriesDedupedCached()
                         tg?.setPinChannel(value, number);
                         break;
                     }
+                    case var k when Regex.IsMatch(k, "^display_led\\d+_pin$"):
+                    {
+                        int number = int.Parse(Regex.Match(key, "\\d+").Value);
+                        desc += "- Display LED (channel " + number + ") on P" + value + Environment.NewLine;
+                        tg?.setPinRole(value, PinRole.LED);
+                        tg?.setPinChannel(value, number);
+                        break;
+                    }
                     case var k when Regex.IsMatch(k, "^netled\\d+_pin$"):
                     case "netled_pin":
+                    case "net_led_pin":
                     case "wfst":
                     case "wfst_pin":
                         // some devices have netled1_pin, some have netled_pin
@@ -1330,8 +1339,32 @@ List<KvEntry> GetVaultEntriesDedupedCached()
                         break;
                     case var k when Regex.IsMatch(k, "bz_pin_pin"):
                     case "buzzer_io":
+                    case "sound_pin":
                         desc += "- Buzzer Pin (TODO) on P" + value + Environment.NewLine;
                         //tg?.setPinRole(value, PinRole.WifiLED_n);
+                        break;
+                    case "total_led_pin":
+                        desc += "- Status LED (total) on P" + value + Environment.NewLine;
+                        // Use total_led_lv polarity if present: 1/true => active-high (WifiLED), 0/false => active-low (WifiLED_n).
+                        if (source.TryGetValue("total_led_lv", out string totalLedLv))
+                        {
+                            bool? activeHigh = null;
+                            if (!string.IsNullOrWhiteSpace(totalLedLv))
+                            {
+                                var sLv = totalLedLv.Trim();
+                                if (sLv.Equals("1", StringComparison.OrdinalIgnoreCase) || sLv.Equals("true", StringComparison.OrdinalIgnoreCase))
+                                    activeHigh = true;
+                                else if (sLv.Equals("0", StringComparison.OrdinalIgnoreCase) || sLv.Equals("false", StringComparison.OrdinalIgnoreCase))
+                                    activeHigh = false;
+                                else if (int.TryParse(sLv, out int iLv))
+                                    activeHigh = iLv != 0;
+                            }
+                            tg?.setPinRole(value, activeHigh.HasValue ? (activeHigh.Value ? PinRole.WifiLED : PinRole.WifiLED_n) : PinRole.WifiLED_n);
+                        }
+                        else
+                        {
+                            tg?.setPinRole(value, PinRole.WifiLED_n);
+                        }
                         break;
                     case var k when Regex.IsMatch(k, "status_led_pin"):
                         desc += "- Status LED on P" + value + Environment.NewLine;
@@ -1402,6 +1435,7 @@ List<KvEntry> GetVaultEntriesDedupedCached()
                         tg?.setPinChannel(value, number);
                         break;
                     }
+                    case "key_pin":
                     case "bt_pin":
                     case "bt":
                     {
@@ -1443,6 +1477,10 @@ List<KvEntry> GetVaultEntriesDedupedCached()
                         tg?.setPinChannel(value, number);
                         break;
                     }
+                    case "tamper_pin_pin":
+                        desc += "- Tamper switch on P" + value + Environment.NewLine;
+                        tg?.setPinRole(value, PinRole.dInput);
+                        break;
                     case "gate_sensor_pin_pin":
                         desc += "- Door/Gate sensor on P" + value + Environment.NewLine;
                         tg?.setPinRole(value, PinRole.dInput);
@@ -1468,16 +1506,19 @@ List<KvEntry> GetVaultEntriesDedupedCached()
                         desc += "- BL0937 SEL on P" + value + Environment.NewLine;
                         tg?.setPinRole(value, PinRole.BL0937SEL);
                         break;
+                    case "red_pin":
                     case "r_pin":
                         desc += "- LED Red (Channel 1) on P" + value + Environment.NewLine;
                         tg?.setPinRole(value, PinRole.PWM);
                         tg?.setPinChannel(value, 0);
                         break;
+                    case "green_pin":
                     case "g_pin":
                         desc += "- LED Green (Channel 2) on P" + value + Environment.NewLine;
                         tg?.setPinRole(value, PinRole.PWM);
                         tg?.setPinChannel(value, 1);
                         break;
+                    case "blue_pin":
                     case "b_pin":
                         desc += "- LED Blue (Channel 3) on P" + value + Environment.NewLine;
                         tg?.setPinRole(value, PinRole.PWM);
@@ -1503,6 +1544,7 @@ List<KvEntry> GetVaultEntriesDedupedCached()
                     case "buzzer_pwm":
                         desc += "- Buzzer Frequency (TODO) is " + value + "Hz" + Environment.NewLine;
                         break;
+                    case "ir":
                     case "irpin":
                     case "infrr":
                         desc += "- IR Receiver is on P" + value + "" + Environment.NewLine;
@@ -1535,11 +1577,13 @@ List<KvEntry> GetVaultEntriesDedupedCached()
                     case "pirin_pin":
                         desc += "- PIR Input " + value + "" + Environment.NewLine;
                         break;
+                    case "MOSI":
                     case "mosi":
                         desc += "- SPI MOSI " + value + "" + Environment.NewLine;
                         // assume SPI LED
                         tg?.setPinRole(value, PinRole.SM16703P_DIN);
                         break;
+                    case "MISO":
                     case "miso":
                         desc += "- SPI MISO " + value + "" + Environment.NewLine;
                         break;
