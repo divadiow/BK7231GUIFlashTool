@@ -1349,6 +1349,27 @@ List<KvEntry> GetVaultEntriesDedupedCached()
 
                 return pinKey + "_lv";
             }
+            string GetLvNoteForKey(string pinKey)
+            {
+                var lvKey = DeriveLvKeySimple(pinKey);
+                if (string.IsNullOrEmpty(lvKey))
+                    return "";
+
+                if (!source.TryGetValue(lvKey, out string lvRaw))
+                    return "";
+
+                lvRaw = lvRaw?.Trim();
+
+                var ah = TryParseLvValue(lvRaw);
+                if (!ah.HasValue)
+                    return " (lv=" + lvRaw + ")";
+
+                if (ah.Value)
+                    return " (lv=" + lvRaw + " active-high)";
+
+                return " (lv=" + lvRaw + " active-low, inverted)";
+            }
+
             foreach(var kv in source)
             {
                 string key = kv.Key;
@@ -1358,7 +1379,7 @@ List<KvEntry> GetVaultEntriesDedupedCached()
                     case var k when Regex.IsMatch(k, "^led\\d+_pin$"):
                     {
                         int number = int.Parse(Regex.Match(key, "\\d+").Value);
-                        desc += "- LED (channel " + number + ") on P" + value + Environment.NewLine;
+                        desc += "- LED (channel " + number + ") on P" + value + GetLvNoteForKey(key) + Environment.NewLine;
 
                         var lvKey = DeriveLvKeySimple(key);
                         var role = ApplyLvRole(lvKey, "LED", "LED_n", PinRole.LED);
@@ -1370,7 +1391,7 @@ List<KvEntry> GetVaultEntriesDedupedCached()
                     case var k when Regex.IsMatch(k, "^display_led\\d+_pin$"):
                     {
                         int number = int.Parse(Regex.Match(key, "\\d+").Value);
-                        desc += "- Display LED (channel " + number + ") on P" + value + Environment.NewLine;
+                        desc += "- Display LED (channel " + number + ") on P" + value + GetLvNoteForKey(key) + Environment.NewLine;
 
                         var lvKey = DeriveLvKeySimple(key);
                         var role = ApplyLvRole(lvKey, "LED", "LED_n", PinRole.LED);
@@ -1385,7 +1406,7 @@ List<KvEntry> GetVaultEntriesDedupedCached()
                     case "wfst":
                     case "wfst_pin":
                         // some devices have netled1_pin, some have netled_pin
-                        desc += "- WiFi LED on P" + value + Environment.NewLine;
+                        desc += "- WiFi LED on P" + value + GetLvNoteForKey(key) + Environment.NewLine;
                         {
                             var lvKey = DeriveLvKeySimple(key);
                             var role = ApplyLvRole(lvKey, "WifiLED", "WifiLED_n", PinRole.WifiLED_n);
@@ -1395,11 +1416,11 @@ List<KvEntry> GetVaultEntriesDedupedCached()
                     case var k when Regex.IsMatch(k, "bz_pin_pin"):
                     case "buzzer_io":
                     case "sound_pin":
-                        desc += "- Buzzer Pin (TODO) on P" + value + Environment.NewLine;
+                        desc += "- Buzzer Pin (TODO) on P" + value + GetLvNoteForKey(key) + Environment.NewLine;
                         //tg?.setPinRole(value, PinRole.WifiLED_n);
                         break;
                     case "total_led_pin":
-                        desc += "- Status LED (total) on P" + value + Environment.NewLine;
+                        desc += "- Status LED (total) on P" + value + GetLvNoteForKey(key) + Environment.NewLine;
                         {
                             var lvKey = DeriveLvKeySimple(key); // total_led_lv
                             var role = ApplyLvRole(lvKey, "WifiLED", "WifiLED_n", PinRole.WifiLED_n);
@@ -1407,7 +1428,7 @@ List<KvEntry> GetVaultEntriesDedupedCached()
                         }
                         break;
                     case var k when Regex.IsMatch(k, "status_led_pin"):
-                        desc += "- Status LED on P" + value + Environment.NewLine;
+                        desc += "- Status LED on P" + value + GetLvNoteForKey(key) + Environment.NewLine;
                         {
                             var lvKey = DeriveLvKeySimple(key);
                             var role = ApplyLvRole(lvKey, "WifiLED", "WifiLED_n", PinRole.WifiLED_n);
@@ -1415,7 +1436,7 @@ List<KvEntry> GetVaultEntriesDedupedCached()
                         }
                         break;
                     case var k when Regex.IsMatch(k, "remote_io"):
-                        desc += "- RF Remote on P" + value + Environment.NewLine;
+                        desc += "- RF Remote on P" + value + GetLvNoteForKey(key) + Environment.NewLine;
                         {
                             var lvKey = DeriveLvKeySimple(key);
                             var role = ApplyLvRole(lvKey, "RCRecv", "RCRecv_n", PinRole.RCRecv);
@@ -1423,7 +1444,7 @@ List<KvEntry> GetVaultEntriesDedupedCached()
                         }
                         break;
                     case var k when Regex.IsMatch(k, "samp_sw_pin"):
-                        desc += "- Battery Relay on P" + value + Environment.NewLine;
+                        desc += "- Battery Relay on P" + value + GetLvNoteForKey(key) + Environment.NewLine;
                         {
                             var lvKey = DeriveLvKeySimple(key);
                             var role = ApplyLvRole(lvKey, "BAT_Relay", "BAT_Relay_n", PinRole.BAT_Relay);
@@ -1431,23 +1452,23 @@ List<KvEntry> GetVaultEntriesDedupedCached()
                         }
                         break;
                     case var k when Regex.IsMatch(k, "samp_pin"):
-                        desc += "- Battery ADC on P" + value + Environment.NewLine;
+                        desc += "- Battery ADC on P" + value + GetLvNoteForKey(key) + Environment.NewLine;
                         tg?.setPinRole(value, PinRole.BAT_ADC);
                         break;
                     case var k when Regex.IsMatch(k, "i2c_scl_pin"):
-                        desc += "- I2C SCL on P" + value + Environment.NewLine;
+                        desc += "- I2C SCL on P" + value + GetLvNoteForKey(key) + Environment.NewLine;
                         break;
                     case var k when Regex.IsMatch(k, "i2c_sda_pin"):
-                        desc += "- I2C SDA on P" + value + Environment.NewLine;
+                        desc += "- I2C SDA on P" + value + GetLvNoteForKey(key) + Environment.NewLine;
                         break;
                     case var k when Regex.IsMatch(k, "alt_pin_pin"):
-                        desc += "- ALT pin on P" + value + Environment.NewLine;
+                        desc += "- ALT pin on P" + value + GetLvNoteForKey(key) + Environment.NewLine;
                         break;
                     case var k when Regex.IsMatch(k, "one_wire_pin"):
-                        desc += "- OneWire IO pin on P" + value + Environment.NewLine;
+                        desc += "- OneWire IO pin on P" + value + GetLvNoteForKey(key) + Environment.NewLine;
                         break;
                     case var k when Regex.IsMatch(k, "backlit_io_pin"):
-                        desc += "- Backlit IO pin on P" + value + Environment.NewLine;
+                        desc += "- Backlit IO pin on P" + value + GetLvNoteForKey(key) + Environment.NewLine;
                         {
                             var lvKey = DeriveLvKeySimple(key);
                             var role = ApplyLvRole(lvKey, "LED", "LED_n", PinRole.LED);
@@ -1463,7 +1484,7 @@ List<KvEntry> GetVaultEntriesDedupedCached()
                         bHasBattery = true;
                         break;
                     case "rl":
-                        desc += "- Relay (channel 0) on P" + value + Environment.NewLine;
+                        desc += "- Relay (channel 0) on P" + value + GetLvNoteForKey(key) + Environment.NewLine;
                         {
                             var lvKey = DeriveLvKeySimple(key); // rl_lv
                             var role = ApplyLvRole(lvKey, "Rel", "Rel_n", PinRole.Rel);
@@ -1474,7 +1495,7 @@ List<KvEntry> GetVaultEntriesDedupedCached()
                     case var k when Regex.IsMatch(k, "^rl\\d+_pin$"):
                     {
                         int number = int.Parse(Regex.Match(key, "\\d+").Value);
-                        desc += "- Relay (channel " + number + ") on P" + value + Environment.NewLine;
+                        desc += "- Relay (channel " + number + ") on P" + value + GetLvNoteForKey(key) + Environment.NewLine;
 
                         var lvKey = DeriveLvKeySimple(key);
                         var role = ApplyLvRole(lvKey, "Rel", "Rel_n", PinRole.Rel);
@@ -1486,7 +1507,7 @@ List<KvEntry> GetVaultEntriesDedupedCached()
                     case var k when Regex.IsMatch(k, "^rl_on\\d+_pin$"):
                     {
                         int number = int.Parse(Regex.Match(key, "\\d+").Value);
-                        desc += "- Bridge Relay On (channel " + number + ") on P" + value + Environment.NewLine;
+                        desc += "- Bridge Relay On (channel " + number + ") on P" + value + GetLvNoteForKey(key) + Environment.NewLine;
 
                         var lvKey = DeriveLvKeySimple(key);
                         var role = ApplyLvRole(lvKey, "Rel", "Rel_n", PinRole.Rel);
@@ -1498,7 +1519,7 @@ List<KvEntry> GetVaultEntriesDedupedCached()
                     case var k when Regex.IsMatch(k, "^rl_off\\d+_pin$"):
                     {
                         int number = int.Parse(Regex.Match(key, "\\d+").Value);
-                        desc += "- Bridge Relay Off (channel " + number + ") on P" + value + Environment.NewLine;
+                        desc += "- Bridge Relay Off (channel " + number + ") on P" + value + GetLvNoteForKey(key) + Environment.NewLine;
 
                         var lvKey = DeriveLvKeySimple(key);
                         var role = ApplyLvRole(lvKey, "Rel", "Rel_n", PinRole.Rel_n);
@@ -1512,7 +1533,7 @@ List<KvEntry> GetVaultEntriesDedupedCached()
                     case "bt":
                     {
                         int number = 0;
-                        desc += "- Button (channel " + number + ") on P" + value + Environment.NewLine;
+                        desc += "- Button (channel " + number + ") on P" + value + GetLvNoteForKey(key) + Environment.NewLine;
 
                         var lvKey = DeriveLvKeySimple(key);
                         var role = ApplyLvRole(lvKey, "Btn", "Btn_n", PinRole.Btn);
@@ -1524,7 +1545,7 @@ List<KvEntry> GetVaultEntriesDedupedCached()
                     case var k when Regex.IsMatch(k, "^k\\d+pin_pin$"):
                     {
                         int number = int.Parse(Regex.Match(key, "\\d+").Value);
-                        desc += "- Button (channel " + number + ") on P" + value + Environment.NewLine;
+                        desc += "- Button (channel " + number + ") on P" + value + GetLvNoteForKey(key) + Environment.NewLine;
 
                         var lvKey = DeriveLvKeySimple(key);
                         var role = ApplyLvRole(lvKey, "Btn", "Btn_n", PinRole.Btn);
@@ -1536,7 +1557,7 @@ List<KvEntry> GetVaultEntriesDedupedCached()
                     case var k when Regex.IsMatch(k, "^bt\\d+_pin$"):
                     {
                         int number = int.Parse(Regex.Match(key, "\\d+").Value);
-                        desc += "- Button (channel " + number + ") on P" + value + Environment.NewLine;
+                        desc += "- Button (channel " + number + ") on P" + value + GetLvNoteForKey(key) + Environment.NewLine;
 
                         var lvKey = DeriveLvKeySimple(key);
                         var role = ApplyLvRole(lvKey, "Btn", "Btn_n", PinRole.Btn);
@@ -1548,7 +1569,7 @@ List<KvEntry> GetVaultEntriesDedupedCached()
                     case var k when Regex.IsMatch(k, "^door\\d+_magt_pin$"):
                     {
                         int number = int.Parse(Regex.Match(key, "\\d+").Value);
-                        desc += "- Door Sensor (channel " + number + ") on P" + value + Environment.NewLine;
+                        desc += "- Door Sensor (channel " + number + ") on P" + value + GetLvNoteForKey(key) + Environment.NewLine;
 
                         var lvKey = DeriveLvKeySimple(key);
                         var role = ApplyLvRole(lvKey, "dInput", "dInput_n", PinRole.dInput);
@@ -1560,7 +1581,7 @@ List<KvEntry> GetVaultEntriesDedupedCached()
                     case var k when Regex.IsMatch(k, "^onoff\\d+$"):
                     {
                         int number = int.Parse(Regex.Match(key, "\\d+").Value);
-                        desc += "- TglChannelToggle (channel " + number + ") on P" + value + Environment.NewLine;
+                        desc += "- TglChannelToggle (channel " + number + ") on P" + value + GetLvNoteForKey(key) + Environment.NewLine;
                         {
                             var lvKey = DeriveLvKeySimple(key);
                             var role = ApplyLvRole(lvKey, "TglChanOnTgl", "TglChanOnTgl_n", PinRole.TglChanOnTgl);
@@ -1570,7 +1591,7 @@ List<KvEntry> GetVaultEntriesDedupedCached()
                         break;
                     }
                     case "tamper_pin_pin":
-                        desc += "- Tamper switch on P" + value + Environment.NewLine;
+                        desc += "- Tamper switch on P" + value + GetLvNoteForKey(key) + Environment.NewLine;
                         {
                             var lvKey = DeriveLvKeySimple(key);
                             var role = ApplyLvRole(lvKey, "dInput", "dInput_n", PinRole.dInput);
@@ -1578,7 +1599,7 @@ List<KvEntry> GetVaultEntriesDedupedCached()
                         }
                         break;
                     case "gate_sensor_pin_pin":
-                        desc += "- Door/Gate sensor on P" + value + Environment.NewLine;
+                        desc += "- Door/Gate sensor on P" + value + GetLvNoteForKey(key) + Environment.NewLine;
                         {
                             var lvKey = DeriveLvKeySimple(key);
                             var role = ApplyLvRole(lvKey, "dInput", "dInput_n", PinRole.dInput);
@@ -1587,7 +1608,7 @@ List<KvEntry> GetVaultEntriesDedupedCached()
                         break;
                     case "basic_pin_pin":
                         // This will read 1 if there was a movement, at least on the sensor I have
-                        desc += "- PIR sensor on P" + value + Environment.NewLine;
+                        desc += "- PIR sensor on P" + value + GetLvNoteForKey(key) + Environment.NewLine;
                         {
                             var lvKey = DeriveLvKeySimple(key);
                             var role = ApplyLvRole(lvKey, "dInput", "dInput_n", PinRole.dInput);
@@ -1596,17 +1617,17 @@ List<KvEntry> GetVaultEntriesDedupedCached()
                         break;
                     case "ele_pin":
                     case "epin":
-                        desc += "- BL0937 ELE (CF) on P" + value + Environment.NewLine;
+                        desc += "- BL0937 ELE (CF) on P" + value + GetLvNoteForKey(key) + Environment.NewLine;
                         tg?.setPinRole(value, PinRole.BL0937CF);
                         break;
                     case "vi_pin":
                     case "ivpin":
-                        desc += "- BL0937 VI (CF1) on P" + value + Environment.NewLine;
+                        desc += "- BL0937 VI (CF1) on P" + value + GetLvNoteForKey(key) + Environment.NewLine;
                         tg?.setPinRole(value, PinRole.BL0937CF1);
                         break;
                     case "sel_pin_pin":
                     case "ivcpin":
-                        desc += "- BL0937 SEL on P" + value + Environment.NewLine;
+                        desc += "- BL0937 SEL on P" + value + GetLvNoteForKey(key) + Environment.NewLine;
                         {
                             var lvKey = DeriveLvKeySimple(key); // sel_pin_lv or ivcpin_lv
                             if (!string.IsNullOrEmpty(lvKey) && !source.ContainsKey(lvKey) && string.Equals(key, "ivcpin", StringComparison.Ordinal))
@@ -1618,7 +1639,7 @@ List<KvEntry> GetVaultEntriesDedupedCached()
                         break;
                     case "red_pin":
                     case "r_pin":
-                        desc += "- LED Red (Channel 1) on P" + value + Environment.NewLine;
+                        desc += "- LED Red (Channel 1) on P" + value + GetLvNoteForKey(key) + Environment.NewLine;
                         {
                             var lvKey = DeriveLvKeySimple(key);
                             var role = ApplyLvRole(lvKey, "PWM", "PWM_n", PinRole.PWM);
@@ -1628,7 +1649,7 @@ List<KvEntry> GetVaultEntriesDedupedCached()
                         break;
                     case "green_pin":
                     case "g_pin":
-                        desc += "- LED Green (Channel 2) on P" + value + Environment.NewLine;
+                        desc += "- LED Green (Channel 2) on P" + value + GetLvNoteForKey(key) + Environment.NewLine;
                         {
                             var lvKey = DeriveLvKeySimple(key);
                             var role = ApplyLvRole(lvKey, "PWM", "PWM_n", PinRole.PWM);
@@ -1638,7 +1659,7 @@ List<KvEntry> GetVaultEntriesDedupedCached()
                         break;
                     case "blue_pin":
                     case "b_pin":
-                        desc += "- LED Blue (Channel 3) on P" + value + Environment.NewLine;
+                        desc += "- LED Blue (Channel 3) on P" + value + GetLvNoteForKey(key) + Environment.NewLine;
                         {
                             var lvKey = DeriveLvKeySimple(key);
                             var role = ApplyLvRole(lvKey, "PWM", "PWM_n", PinRole.PWM);
@@ -1647,7 +1668,7 @@ List<KvEntry> GetVaultEntriesDedupedCached()
                         }
                         break;
                     case "c_pin":
-                        desc += "- LED Cool (Channel 4) on P" + value + Environment.NewLine;
+                        desc += "- LED Cool (Channel 4) on P" + value + GetLvNoteForKey(key) + Environment.NewLine;
                         {
                             var lvKey = DeriveLvKeySimple(key);
                             var role = ApplyLvRole(lvKey, "PWM", "PWM_n", PinRole.PWM);
@@ -1656,7 +1677,7 @@ List<KvEntry> GetVaultEntriesDedupedCached()
                         }
                         break;
                     case "w_pin":
-                        desc += "- LED Warm (Channel 5) on P" + value + Environment.NewLine;
+                        desc += "- LED Warm (Channel 5) on P" + value + GetLvNoteForKey(key) + Environment.NewLine;
                         {
                             var lvKey = DeriveLvKeySimple(key);
                             var role = ApplyLvRole(lvKey, "PWM", "PWM_n", PinRole.PWM);
@@ -1666,10 +1687,10 @@ List<KvEntry> GetVaultEntriesDedupedCached()
                         break;
                     case "mic":
                     case "micpin":
-                        desc += "- Microphone (TODO) on P" + value + Environment.NewLine;
+                        desc += "- Microphone (TODO) on P" + value + GetLvNoteForKey(key) + Environment.NewLine;
                         break;
                     case "ctrl_pin":
-                        desc += "- Control Pin (TODO) on P" + value + Environment.NewLine;
+                        desc += "- Control Pin (TODO) on P" + value + GetLvNoteForKey(key) + Environment.NewLine;
                         break;
                     case "buzzer_pwm":
                         desc += "- Buzzer Frequency (TODO) is " + value + "Hz" + Environment.NewLine;
@@ -1677,7 +1698,7 @@ List<KvEntry> GetVaultEntriesDedupedCached()
                     case "ir":
                     case "irpin":
                     case "infrr":
-                        desc += "- IR Receiver is on P" + value + "" + Environment.NewLine;
+                        desc += "- IR Receiver is on P" + value + GetLvNoteForKey(key) + Environment.NewLine;
                         {
                             var lvKey = DeriveLvKeySimple(key);
                             var role = ApplyLvRole(lvKey, "IRRecv", "IRRecv_n", PinRole.IRRecv);
@@ -1685,7 +1706,7 @@ List<KvEntry> GetVaultEntriesDedupedCached()
                         }
                         break;
                     case "infre":
-                        desc += "- IR Transmitter is on P" + value + "" + Environment.NewLine;
+                        desc += "- IR Transmitter is on P" + value + GetLvNoteForKey(key) + Environment.NewLine;
                         {
                             var lvKey = DeriveLvKeySimple(key);
                             var role = ApplyLvRole(lvKey, "IRSend", "IRSend_n", PinRole.IRSend);
@@ -1693,7 +1714,7 @@ List<KvEntry> GetVaultEntriesDedupedCached()
                         }
                         break;
                     case "reset_pin":
-                        desc += "- Button is on P" + value + Environment.NewLine;
+                        desc += "- Button is on P" + value + GetLvNoteForKey(key) + Environment.NewLine;
                         {
                             string lvKey = null;
                             if (source.ContainsKey("reset_lv"))
@@ -1706,42 +1727,42 @@ List<KvEntry> GetVaultEntriesDedupedCached()
                         }
                         break;
                     case "pwmhz":
-                        desc += "- PWM Frequency " + value + "" + Environment.NewLine;
+                        desc += "- PWM Frequency " + value + GetLvNoteForKey(key) + Environment.NewLine;
                         if(tg != null && int.TryParse(value, out _)) tg.initCommandLine += $"PWMFrequency {value}\r\n";
                         break;
                     case "pirsense_pin":
-                        desc += "- PIR Sensitivity " + value + "" + Environment.NewLine;
+                        desc += "- PIR Sensitivity " + value + GetLvNoteForKey(key) + Environment.NewLine;
                         break;
                     case "pirlduty":
-                        desc += "- PIR Low Duty " + value + "" + Environment.NewLine;
+                        desc += "- PIR Low Duty " + value + GetLvNoteForKey(key) + Environment.NewLine;
                         break;
                     case "pirfreq":
-                        desc += "- PIR Frequency " + value + "" + Environment.NewLine;
+                        desc += "- PIR Frequency " + value + GetLvNoteForKey(key) + Environment.NewLine;
                         break;
                     case "pirmduty":
-                        desc += "- PIR High Duty " + value + "" + Environment.NewLine;
+                        desc += "- PIR High Duty " + value + GetLvNoteForKey(key) + Environment.NewLine;
                         break;
                     case "pirin_pin":
-                        desc += "- PIR Input " + value + "" + Environment.NewLine;
+                        desc += "- PIR Input " + value + GetLvNoteForKey(key) + Environment.NewLine;
                         break;
                     case "MOSI":
                     case "mosi":
-                        desc += "- SPI MOSI " + value + "" + Environment.NewLine;
+                        desc += "- SPI MOSI " + value + GetLvNoteForKey(key) + Environment.NewLine;
                         // assume SPI LED
                         tg?.setPinRole(value, PinRole.SM16703P_DIN);
                         break;
                     case "MISO":
                     case "miso":
-                        desc += "- SPI MISO " + value + "" + Environment.NewLine;
+                        desc += "- SPI MISO " + value + GetLvNoteForKey(key) + Environment.NewLine;
                         break;
                     case "SCL":
-                        desc += "- SPI SCL " + value + "" + Environment.NewLine;
+                        desc += "- SPI SCL " + value + GetLvNoteForKey(key) + Environment.NewLine;
                         break;
                     case "CS":
-                        desc += "- SPI CS " + value + "" + Environment.NewLine;
+                        desc += "- SPI CS " + value + GetLvNoteForKey(key) + Environment.NewLine;
                         break;
                     case "total_bt_pin":
-                        desc += "- Pair/Toggle All Button on P" + value + Environment.NewLine;
+                        desc += "- Pair/Toggle All Button on P" + value + GetLvNoteForKey(key) + Environment.NewLine;
                         {
                             var lvKey = DeriveLvKeySimple(key); // total_bt_lv
                             var role = ApplyLvRole(lvKey, "Btn_Tgl_All", "Btn_Tgl_All_n", PinRole.Btn_Tgl_All);
