@@ -1378,9 +1378,27 @@ List<KvEntry> GetVaultEntriesDedupedCached()
 
                 return pinKey + "_lv";
             }
-            string GetLvNoteForKey(string pinKey, bool supportsActiveLowInversion = true)
+            string ResolveLvKey(params string[] lvKeys)
             {
-                var lvKey = DeriveLvKeySimple(pinKey);
+                if (lvKeys == null)
+                    return null;
+
+                foreach (var lvKey in lvKeys)
+                {
+                    if (!string.IsNullOrEmpty(lvKey) && source.ContainsKey(lvKey))
+                        return lvKey;
+                }
+
+                foreach (var lvKey in lvKeys)
+                {
+                    if (!string.IsNullOrEmpty(lvKey))
+                        return lvKey;
+                }
+
+                return null;
+            }
+            string GetLvNoteForLvKey(string lvKey, string activeLowText)
+            {
                 if (string.IsNullOrEmpty(lvKey))
                     return "";
 
@@ -1396,10 +1414,20 @@ List<KvEntry> GetVaultEntriesDedupedCached()
                 if (ah.Value)
                     return " (lv=" + lvRaw + " active-high)";
 
+                return " (lv=" + lvRaw + " " + activeLowText + ")";
+            }
+            string GetLvNoteForKey(string pinKey, bool supportsActiveLowInversion = true)
+            {
+                var lvKey = DeriveLvKeySimple(pinKey);
                 if (supportsActiveLowInversion)
-                    return " (lv=" + lvRaw + " active-low, inverted)";
+                    return GetLvNoteForLvKey(lvKey, "active-low, inverted");
 
-                return " (lv=" + lvRaw + " active-low, no direct inverted OBK role; related variants are bias-specific)";
+                return GetLvNoteForLvKey(lvKey, "active-low, no direct inverted OBK role; related variants are bias-specific");
+            }
+            string GetNeutralLvNoteForKey(string pinKey)
+            {
+                var lvKey = DeriveLvKeySimple(pinKey);
+                return GetLvNoteForLvKey(lvKey, "active-low");
             }
 
             foreach(var kv in source)
@@ -1447,11 +1475,11 @@ List<KvEntry> GetVaultEntriesDedupedCached()
                         break;
                     case "bz_pin_pin":
                     case "buzzer_io":
-                        desc += "- Buzzer Pin (TODO) on P" + value + GetLvNoteForKey(key) + Environment.NewLine;
+                        desc += "- Buzzer Pin (TODO) on P" + value + GetNeutralLvNoteForKey(key) + Environment.NewLine;
                         //tg?.setPinRole(value, PinRole.WifiLED_n);
                         break;
                     case "sound_pin":
-                        desc += "- Sound Pin (TODO) on P" + value + GetLvNoteForKey(key) + Environment.NewLine;
+                        desc += "- Sound Pin (TODO) on P" + value + GetNeutralLvNoteForKey(key) + Environment.NewLine;
                         //tg?.setPinRole(value, PinRole.WifiLED_n);
                         break;
                     case "total_led_pin":
@@ -1488,20 +1516,20 @@ List<KvEntry> GetVaultEntriesDedupedCached()
                         }
                         break;
                     case var k when Regex.IsMatch(k, "samp_pin"):
-                        desc += "- Battery ADC on P" + value + GetLvNoteForKey(key) + Environment.NewLine;
+                        desc += "- Battery ADC on P" + value + GetNeutralLvNoteForKey(key) + Environment.NewLine;
                         tg?.setPinRole(value, PinRole.BAT_ADC);
                         break;
                     case var k when Regex.IsMatch(k, "i2c_scl_pin"):
-                        desc += "- I2C SCL on P" + value + GetLvNoteForKey(key) + Environment.NewLine;
+                        desc += "- I2C SCL on P" + value + GetNeutralLvNoteForKey(key) + Environment.NewLine;
                         break;
                     case var k when Regex.IsMatch(k, "i2c_sda_pin"):
-                        desc += "- I2C SDA on P" + value + GetLvNoteForKey(key) + Environment.NewLine;
+                        desc += "- I2C SDA on P" + value + GetNeutralLvNoteForKey(key) + Environment.NewLine;
                         break;
                     case var k when Regex.IsMatch(k, "alt_pin_pin"):
-                        desc += "- ALT pin on P" + value + GetLvNoteForKey(key) + Environment.NewLine;
+                        desc += "- ALT pin on P" + value + GetNeutralLvNoteForKey(key) + Environment.NewLine;
                         break;
                     case var k when Regex.IsMatch(k, "one_wire_pin"):
-                        desc += "- OneWire IO pin on P" + value + GetLvNoteForKey(key) + Environment.NewLine;
+                        desc += "- OneWire IO pin on P" + value + GetNeutralLvNoteForKey(key) + Environment.NewLine;
                         break;
                     case var k when Regex.IsMatch(k, "backlit_io_pin"):
                         desc += "- Backlit IO pin on P" + value + GetLvNoteForKey(key) + Environment.NewLine;
@@ -1654,21 +1682,22 @@ List<KvEntry> GetVaultEntriesDedupedCached()
                         break;
                     case "ele_pin":
                     case "epin":
-                        desc += "- BL0937 ELE (CF) on P" + value + GetLvNoteForKey(key) + Environment.NewLine;
+                        desc += "- BL0937 ELE (CF) on P" + value + GetNeutralLvNoteForKey(key) + Environment.NewLine;
                         tg?.setPinRole(value, PinRole.BL0937CF);
                         break;
                     case "vi_pin":
                     case "ivpin":
-                        desc += "- BL0937 VI (CF1) on P" + value + GetLvNoteForKey(key) + Environment.NewLine;
+                        desc += "- BL0937 VI (CF1) on P" + value + GetNeutralLvNoteForKey(key) + Environment.NewLine;
                         tg?.setPinRole(value, PinRole.BL0937CF1);
                         break;
                     case "sel_pin_pin":
                     case "ivcpin":
-                        desc += "- BL0937 SEL on P" + value + GetLvNoteForKey(key) + Environment.NewLine;
                         {
-                            var lvKey = DeriveLvKeySimple(key); // sel_pin_lv or ivcpin_lv
-                            if (!string.IsNullOrEmpty(lvKey) && !source.ContainsKey(lvKey) && string.Equals(key, "ivcpin", StringComparison.Ordinal))
-                                lvKey = "sel_pin_lv";
+                            var lvKey = string.Equals(key, "ivcpin", StringComparison.Ordinal)
+                                ? ResolveLvKey("ivcpin_lv", "sel_pin_lv")
+                                : DeriveLvKeySimple(key);
+
+                            desc += "- BL0937 SEL on P" + value + GetLvNoteForLvKey(lvKey, "active-low, inverted") + Environment.NewLine;
 
                             var role = ApplyLvRole(lvKey, "BL0937SEL", "BL0937SEL_n", PinRole.BL0937SEL);
                             tg?.setPinRole(value, role);
@@ -1724,17 +1753,17 @@ List<KvEntry> GetVaultEntriesDedupedCached()
                         break;
                     case "mic":
                     case "micpin":
-                        desc += "- Microphone (TODO) on P" + value + GetLvNoteForKey(key) + Environment.NewLine;
+                        desc += "- Microphone (TODO) on P" + value + GetNeutralLvNoteForKey(key) + Environment.NewLine;
                         break;
                     case "ctrl_pin":
-                        desc += "- Control Pin (TODO) on P" + value + GetLvNoteForKey(key) + Environment.NewLine;
+                        desc += "- Control Pin (TODO) on P" + value + GetNeutralLvNoteForKey(key) + Environment.NewLine;
                         break;
                     case "a_ctl_io_pin":
                     case "hl_ctl_io_pin":
                     case "lightminus_sw_pin":
                     case "lightplus_sw_pin":
                     case "p_sw_io_pin":
-                        desc += "- " + key + " (TODO) on P" + value + GetLvNoteForKey(key) + Environment.NewLine;
+                        desc += "- " + key + " (TODO) on P" + value + GetNeutralLvNoteForKey(key) + Environment.NewLine;
                         break;
                     case "buzzer_pwm":
                         desc += "- Buzzer Frequency (TODO) is " + value + "Hz" + Environment.NewLine;
@@ -1760,13 +1789,9 @@ List<KvEntry> GetVaultEntriesDedupedCached()
                         }
                         break;
                     case "reset_pin":
-                        desc += "- Button is on P" + value + GetLvNoteForKey(key) + Environment.NewLine;
                         {
-                            string lvKey = null;
-                            if (source.ContainsKey("reset_lv"))
-                            lvKey = "reset_lv";
-                            else if (source.ContainsKey("reset_pin_lv"))
-                            lvKey = "reset_pin_lv";
+                            var lvKey = ResolveLvKey("reset_lv");
+                            desc += "- Button is on P" + value + GetLvNoteForLvKey(lvKey, "active-low, inverted") + Environment.NewLine;
 
                             var role = ApplyLvRole(lvKey, "Btn", "Btn_n", PinRole.Btn);
                             tg?.setPinRole(value, role);
@@ -1793,19 +1818,19 @@ List<KvEntry> GetVaultEntriesDedupedCached()
                         break;
                     case "MOSI":
                     case "mosi":
-                        desc += "- SPI MOSI " + value + GetLvNoteForKey(key) + Environment.NewLine;
+                        desc += "- SPI MOSI " + value + GetNeutralLvNoteForKey(key) + Environment.NewLine;
                         // assume SPI LED
                         tg?.setPinRole(value, PinRole.SM16703P_DIN);
                         break;
                     case "MISO":
                     case "miso":
-                        desc += "- SPI MISO " + value + GetLvNoteForKey(key) + Environment.NewLine;
+                        desc += "- SPI MISO " + value + GetNeutralLvNoteForKey(key) + Environment.NewLine;
                         break;
                     case "SCL":
-                        desc += "- SPI SCL " + value + GetLvNoteForKey(key) + Environment.NewLine;
+                        desc += "- SPI SCL " + value + GetNeutralLvNoteForKey(key) + Environment.NewLine;
                         break;
                     case "CS":
-                        desc += "- SPI CS " + value + GetLvNoteForKey(key) + Environment.NewLine;
+                        desc += "- SPI CS " + value + GetNeutralLvNoteForKey(key) + Environment.NewLine;
                         break;
                     case "total_bt_pin":
                         desc += "- Pair/Toggle All Button on P" + value + GetLvNoteForKey(key) + Environment.NewLine;
