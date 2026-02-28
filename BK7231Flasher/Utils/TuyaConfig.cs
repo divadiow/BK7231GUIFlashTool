@@ -1445,10 +1445,13 @@ List<KvEntry> GetVaultEntriesDedupedCached()
                             tg?.setPinRole(value, role);
                         }
                         break;
-                    case var k when Regex.IsMatch(k, "bz_pin_pin"):
+                    case "bz_pin_pin":
                     case "buzzer_io":
-                    case "sound_pin":
                         desc += "- Buzzer Pin (TODO) on P" + value + GetLvNoteForKey(key) + Environment.NewLine;
+                        //tg?.setPinRole(value, PinRole.WifiLED_n);
+                        break;
+                    case "sound_pin":
+                        desc += "- Sound Pin (TODO) on P" + value + GetLvNoteForKey(key) + Environment.NewLine;
                         //tg?.setPinRole(value, PinRole.WifiLED_n);
                         break;
                     case "total_led_pin":
@@ -1725,6 +1728,13 @@ List<KvEntry> GetVaultEntriesDedupedCached()
                         break;
                     case "ctrl_pin":
                         desc += "- Control Pin (TODO) on P" + value + GetLvNoteForKey(key) + Environment.NewLine;
+                        break;
+                    case "a_ctl_io_pin":
+                    case "hl_ctl_io_pin":
+                    case "lightminus_sw_pin":
+                    case "lightplus_sw_pin":
+                    case "p_sw_io_pin":
+                        desc += "- " + key + " (TODO) on P" + value + GetLvNoteForKey(key) + Environment.NewLine;
                         break;
                     case "buzzer_pwm":
                         desc += "- Buzzer Frequency (TODO) is " + value + "Hz" + Environment.NewLine;
