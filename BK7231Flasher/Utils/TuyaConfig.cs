@@ -1367,6 +1367,11 @@ List<KvEntry> GetVaultEntriesDedupedCached()
 
                 return roleDefault;
             }
+            bool IsUnsupportedActiveLow(string lvKey, string roleActiveLowName)
+            {
+                return TryGetLvActiveHigh(lvKey, out bool activeHigh) && !activeHigh && string.IsNullOrWhiteSpace(roleActiveLowName);
+            }
+
 
             string DeriveLvKeySimple(string pinKey)
             {
@@ -1499,9 +1504,10 @@ List<KvEntry> GetVaultEntriesDedupedCached()
                         }
                         break;
                     case var k when Regex.IsMatch(k, "remote_io"):
-                        desc += "- RF Remote on P" + value + GetLvNoteForKey(key, false) + Environment.NewLine;
                         {
                             var lvKey = DeriveLvKeySimple(key);
+                            bool unsupportedActiveLow = IsUnsupportedActiveLow(lvKey, null);
+                            desc += "- RF Remote" + (unsupportedActiveLow ? " (TODO: active-low variant unsupported)" : "") + " on P" + value + GetLvNoteForLvKey(lvKey, "active-low") + Environment.NewLine;
                             var role = ApplyLvRoleOrNull(lvKey, "RCRecv", null, PinRole.RCRecv);
                             if (role.HasValue)
                                 tg?.setPinRole(value, role.Value);
@@ -1642,17 +1648,18 @@ List<KvEntry> GetVaultEntriesDedupedCached()
                         tg?.setPinChannel(value, number);
                         break;
                     }
-                    case var k when Regex.IsMatch(k, "^onoff\\d+$"):
+                    case var k when Regex.IsMatch(k, "^onoff\d+$"):
                     {
-                        int number = int.Parse(Regex.Match(key, "\\d+").Value);
-                        desc += "- TglChannelToggle (channel " + number + ") on P" + value + GetLvNoteForKey(key, false) + Environment.NewLine;
+                        int number = int.Parse(Regex.Match(key, "\d+").Value);
+                        var lvKey = DeriveLvKeySimple(key);
+                        bool unsupportedActiveLow = IsUnsupportedActiveLow(lvKey, null);
+                        desc += "- TglChannelToggle" + (unsupportedActiveLow ? " (TODO: active-low variant unsupported)" : "") + " (channel " + number + ") on P" + value + GetLvNoteForLvKey(lvKey, "active-low") + Environment.NewLine;
+                        var role = ApplyLvRoleOrNull(lvKey, "TglChanOnTgl", null, PinRole.TglChanOnTgl);
+                        if (role.HasValue)
                         {
-                            var lvKey = DeriveLvKeySimple(key);
-                            var role = ApplyLvRoleOrNull(lvKey, "TglChanOnTgl", null, PinRole.TglChanOnTgl);
-                            if (role.HasValue)
-                                tg?.setPinRole(value, role.Value);
+                            tg?.setPinRole(value, role.Value);
+                            tg?.setPinChannel(value, number);
                         }
-                        tg?.setPinChannel(value, number);
                         break;
                     }
                     case "tamper_pin_pin":
@@ -1771,18 +1778,20 @@ List<KvEntry> GetVaultEntriesDedupedCached()
                     case "ir":
                     case "irpin":
                     case "infrr":
-                        desc += "- IR Receiver is on P" + value + GetLvNoteForKey(key, false) + Environment.NewLine;
                         {
                             var lvKey = DeriveLvKeySimple(key);
+                            bool unsupportedActiveLow = IsUnsupportedActiveLow(lvKey, null);
+                            desc += "- IR Receiver" + (unsupportedActiveLow ? " (TODO: active-low variant unsupported)" : "") + " is on P" + value + GetLvNoteForLvKey(lvKey, "active-low") + Environment.NewLine;
                             var role = ApplyLvRoleOrNull(lvKey, "IRRecv", null, PinRole.IRRecv);
                             if (role.HasValue)
                                 tg?.setPinRole(value, role.Value);
                         }
                         break;
                     case "infre":
-                        desc += "- IR Transmitter is on P" + value + GetLvNoteForKey(key, false) + Environment.NewLine;
                         {
                             var lvKey = DeriveLvKeySimple(key);
+                            bool unsupportedActiveLow = IsUnsupportedActiveLow(lvKey, null);
+                            desc += "- IR Transmitter" + (unsupportedActiveLow ? " (TODO: active-low variant unsupported)" : "") + " is on P" + value + GetLvNoteForLvKey(lvKey, "active-low") + Environment.NewLine;
                             var role = ApplyLvRoleOrNull(lvKey, "IRSend", null, PinRole.IRSend);
                             if (role.HasValue)
                                 tg?.setPinRole(value, role.Value);
