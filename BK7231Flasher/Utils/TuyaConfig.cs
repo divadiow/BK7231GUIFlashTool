@@ -1323,17 +1323,46 @@ List<KvEntry> GetVaultEntriesDedupedCached()
                 return null;
             }
 
+            bool TryGetLvActiveHigh(string lvKey, out bool activeHigh)
+            {
+                activeHigh = true;
+                if (string.IsNullOrEmpty(lvKey) || !source.TryGetValue(lvKey, out string lvRaw))
+                    return false;
+
+                var ah = TryParseLvValue(lvRaw);
+                if (!ah.HasValue)
+                    return false;
+
+                activeHigh = ah.Value;
+                return true;
+            }
+
             PinRole ApplyLvRole(string lvKey, string roleActiveHighName, string roleActiveLowName, PinRole roleDefault)
             {
-                if (!string.IsNullOrEmpty(lvKey) && source.TryGetValue(lvKey, out string lvRaw))
+                if (TryGetLvActiveHigh(lvKey, out bool activeHigh))
                 {
-                    var ah = TryParseLvValue(lvRaw);
-                    if (ah.HasValue)
+                    var roleName = activeHigh ? roleActiveHighName : roleActiveLowName;
+                    if (!string.IsNullOrWhiteSpace(roleName) && Enum.TryParse<PinRole>(roleName, out var parsedRole))
+                        return parsedRole;
+                }
+
+                return roleDefault;
+            }
+
+            PinRole? ApplyLvRoleOrNull(string lvKey, string roleActiveHighName, string roleActiveLowName, PinRole roleDefault)
+            {
+                if (TryGetLvActiveHigh(lvKey, out bool activeHigh))
+                {
+                    if (!activeHigh)
                     {
-                        var roleName = ah.Value ? roleActiveHighName : roleActiveLowName;
-                        if (!string.IsNullOrWhiteSpace(roleName) && Enum.TryParse<PinRole>(roleName, out var parsedRole))
-                            return parsedRole;
+                        if (!string.IsNullOrWhiteSpace(roleActiveLowName) && Enum.TryParse<PinRole>(roleActiveLowName, out var parsedLowRole))
+                            return parsedLowRole;
+
+                        return null;
                     }
+
+                    if (!string.IsNullOrWhiteSpace(roleActiveHighName) && Enum.TryParse<PinRole>(roleActiveHighName, out var parsedHighRole))
+                        return parsedHighRole;
                 }
 
                 return roleDefault;
@@ -1349,7 +1378,7 @@ List<KvEntry> GetVaultEntriesDedupedCached()
 
                 return pinKey + "_lv";
             }
-            string GetLvNoteForKey(string pinKey)
+            string GetLvNoteForKey(string pinKey, bool supportsActiveLowInversion = true)
             {
                 var lvKey = DeriveLvKeySimple(pinKey);
                 if (string.IsNullOrEmpty(lvKey))
@@ -1367,7 +1396,10 @@ List<KvEntry> GetVaultEntriesDedupedCached()
                 if (ah.Value)
                     return " (lv=" + lvRaw + " active-high)";
 
-                return " (lv=" + lvRaw + " active-low, inverted)";
+                if (supportsActiveLowInversion)
+                    return " (lv=" + lvRaw + " active-low, inverted)";
+
+                return " (lv=" + lvRaw + " active-low, no direct inverted OBK role; related variants are bias-specific)";
             }
 
             foreach(var kv in source)
@@ -1436,11 +1468,12 @@ List<KvEntry> GetVaultEntriesDedupedCached()
                         }
                         break;
                     case var k when Regex.IsMatch(k, "remote_io"):
-                        desc += "- RF Remote on P" + value + GetLvNoteForKey(key) + Environment.NewLine;
+                        desc += "- RF Remote on P" + value + GetLvNoteForKey(key, false) + Environment.NewLine;
                         {
                             var lvKey = DeriveLvKeySimple(key);
-                            var role = ApplyLvRole(lvKey, "RCRecv", "RCRecv_n", PinRole.RCRecv);
-                            tg?.setPinRole(value, role);
+                            var role = ApplyLvRoleOrNull(lvKey, "RCRecv", null, PinRole.RCRecv);
+                            if (role.HasValue)
+                                tg?.setPinRole(value, role.Value);
                         }
                         break;
                     case var k when Regex.IsMatch(k, "samp_sw_pin"):
@@ -1581,11 +1614,12 @@ List<KvEntry> GetVaultEntriesDedupedCached()
                     case var k when Regex.IsMatch(k, "^onoff\\d+$"):
                     {
                         int number = int.Parse(Regex.Match(key, "\\d+").Value);
-                        desc += "- TglChannelToggle (channel " + number + ") on P" + value + GetLvNoteForKey(key) + Environment.NewLine;
+                        desc += "- TglChannelToggle (channel " + number + ") on P" + value + GetLvNoteForKey(key, false) + Environment.NewLine;
                         {
                             var lvKey = DeriveLvKeySimple(key);
-                            var role = ApplyLvRole(lvKey, "TglChanOnTgl", "TglChanOnTgl_n", PinRole.TglChanOnTgl);
-                            tg?.setPinRole(value, role);
+                            var role = ApplyLvRoleOrNull(lvKey, "TglChanOnTgl", null, PinRole.TglChanOnTgl);
+                            if (role.HasValue)
+                                tg?.setPinRole(value, role.Value);
                         }
                         tg?.setPinChannel(value, number);
                         break;
@@ -1631,7 +1665,7 @@ List<KvEntry> GetVaultEntriesDedupedCached()
                         {
                             var lvKey = DeriveLvKeySimple(key); // sel_pin_lv or ivcpin_lv
                             if (!string.IsNullOrEmpty(lvKey) && !source.ContainsKey(lvKey) && string.Equals(key, "ivcpin", StringComparison.Ordinal))
-                            lvKey = "sel_pin_lv";
+                                lvKey = "sel_pin_lv";
 
                             var role = ApplyLvRole(lvKey, "BL0937SEL", "BL0937SEL_n", PinRole.BL0937SEL);
                             tg?.setPinRole(value, role);
@@ -1698,19 +1732,21 @@ List<KvEntry> GetVaultEntriesDedupedCached()
                     case "ir":
                     case "irpin":
                     case "infrr":
-                        desc += "- IR Receiver is on P" + value + GetLvNoteForKey(key) + Environment.NewLine;
+                        desc += "- IR Receiver is on P" + value + GetLvNoteForKey(key, false) + Environment.NewLine;
                         {
                             var lvKey = DeriveLvKeySimple(key);
-                            var role = ApplyLvRole(lvKey, "IRRecv", "IRRecv_n", PinRole.IRRecv);
-                            tg?.setPinRole(value, role);
+                            var role = ApplyLvRoleOrNull(lvKey, "IRRecv", null, PinRole.IRRecv);
+                            if (role.HasValue)
+                                tg?.setPinRole(value, role.Value);
                         }
                         break;
                     case "infre":
-                        desc += "- IR Transmitter is on P" + value + GetLvNoteForKey(key) + Environment.NewLine;
+                        desc += "- IR Transmitter is on P" + value + GetLvNoteForKey(key, false) + Environment.NewLine;
                         {
                             var lvKey = DeriveLvKeySimple(key);
-                            var role = ApplyLvRole(lvKey, "IRSend", "IRSend_n", PinRole.IRSend);
-                            tg?.setPinRole(value, role);
+                            var role = ApplyLvRoleOrNull(lvKey, "IRSend", null, PinRole.IRSend);
+                            if (role.HasValue)
+                                tg?.setPinRole(value, role.Value);
                         }
                         break;
                     case "reset_pin":
