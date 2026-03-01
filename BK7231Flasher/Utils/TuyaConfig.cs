@@ -1630,9 +1630,9 @@ List<KvEntry> GetVaultEntriesDedupedCached()
                         tg?.setPinChannel(value, number);
                         break;
                     }
-                    case var k when Regex.IsMatch(k, "^onoff\d+$"):
+                    case var k when Regex.IsMatch(k, "^onoff\\d+$"):
                     {
-                        int number = int.Parse(Regex.Match(key, "\d+").Value);
+                        int number = int.Parse(Regex.Match(key, "\\d+").Value);
                         var lvKey = DeriveLvKeySimple(key);
                         bool unsupportedActiveLow = IsUnsupportedActiveLow(lvKey, null);
                         desc += "- TglChannelToggle" + (unsupportedActiveLow ? " (TODO: active-low variant unsupported)" : "") + " (channel " + number + ") on P" + value + GetLvNoteForLvKey(lvKey, "active-low") + Environment.NewLine;
