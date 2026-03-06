@@ -406,7 +406,7 @@ namespace BK7231Flasher
         {
             if (flasher != null)
             {
-                cts.Cancel();
+                cts?.Cancel();
                 flasher.Dispose();
                 //flasher.closePort();
                 flasher = null;
@@ -429,54 +429,58 @@ namespace BK7231Flasher
                 checkBoxSkipKeyCheck.Checked,
                 chkIgnoreCRCErr.Checked);
         }
+        void runFlasherAction(System.Action action)
+        {
+            clearUp();
+            createFlasher();
+            try
+            {
+                action();
+            }
+            finally
+            {
+                worker = null;
+                //setButtonReadLabel(label_startRead);
+                clearUp();
+                setButtonStates(true);
+            }
+        }
+
         
         void testWrite()
         {
-            clearUp();
-            createFlasher();
-            int startSector;
-            int sectors;
-            sectors = 5;
-            startSector = BK7231Flasher.BOOTLOADER_SIZE;
-            byte[] dat = new byte[sectors * BK7231Flasher.SECTOR_SIZE];
-            int baseVal = BK7231Flasher.rand.Next();
-            for(int i = 0; i < dat.Length; i++)
+            runFlasherAction(() =>
             {
-                int useVal = baseVal + i;
-                dat[i] = (byte)(useVal % 256);
-            }
-            flasher.doWrite(startSector, dat);
-            worker = null;
-            //setButtonReadLabel(label_startRead);
-            clearUp();
-            setButtonStates(true);
+                int sectors = 5;
+                int startSector = BK7231Flasher.BOOTLOADER_SIZE;
+                byte[] dat = new byte[sectors * BK7231Flasher.SECTOR_SIZE];
+                int baseVal = BK7231Flasher.rand.Next();
+                for (int i = 0; i < dat.Length; i++)
+                {
+                    int useVal = baseVal + i;
+                    dat[i] = (byte)(useVal % 256);
+                }
+                flasher.doWrite(startSector, dat);
+            });
         }
         void testReadWrite()
         {
-            clearUp();
-            createFlasher();
-            int startSector;
-            int sectors;
-            sectors = 2;
-            startSector = BK7231Flasher.BOOTLOADER_SIZE;
-            flasher.doTestReadWrite(startSector, sectors);
-            worker = null;
-            //setButtonReadLabel(label_startRead);
-            clearUp();
-            setButtonStates(true);
+            runFlasherAction(() =>
+            {
+                int sectors = 2;
+                int startSector = BK7231Flasher.BOOTLOADER_SIZE;
+                flasher.doTestReadWrite(startSector, sectors);
+            });
         }
         void doBackupAndFlashNew()
         {
-            clearUp();
-            createFlasher();
-            flasher.setBackupName(lastBackupNameEnteredByUser);
-            int startSector = getBackupStartSectorForCurrentPlatform();
-            int sectors = getBackupSectorCountForCurrentPlatform();
-            flasher.doReadAndWrite(startSector, sectors, chosenSourceFile, WriteMode.ReadAndWrite);
-            worker = null;
-            //setButtonReadLabel(label_startRead);
-            clearUp();
-            setButtonStates(true);
+            runFlasherAction(() =>
+            {
+                flasher.setBackupName(lastBackupNameEnteredByUser);
+                int startSector = getBackupStartSectorForCurrentPlatform();
+                int sectors = getBackupSectorCountForCurrentPlatform();
+                flasher.doReadAndWrite(startSector, sectors, chosenSourceFile, WriteMode.ReadAndWrite);
+            });
         }
         internal void doCustomWrite(CustomParms cp)
         {
@@ -490,41 +494,32 @@ namespace BK7231Flasher
         }
         void doOnlyFlashNew(object oParm)
         {
-            clearUp();
-            createFlasher();
-            int startSector;
-            int sectors;
-            CustomParms parms = null;
-            if (oParm != null)
+            runFlasherAction(() =>
             {
-                parms = oParm as CustomParms;
-            }
-            if(parms!=null)
-            {
-                startSector = parms.ofs;
-                sectors = parms.len / BK7231Flasher.SECTOR_SIZE;
-                chosenSourceFile = parms.sourceFileName;
-            }
-            else
-            {
-                startSector = getBackupStartSectorForCurrentPlatform();
-                sectors = getBackupSectorCountForCurrentPlatform();
-            }
-            flasher.doReadAndWrite(startSector, sectors, chosenSourceFile, WriteMode.OnlyWrite);
-            worker = null;
-            //setButtonReadLabel(label_startRead);
-            clearUp();
-            setButtonStates(true);
+                int startSector;
+                int sectors;
+                CustomParms parms = null;
+                if (oParm != null)
+                {
+                    parms = oParm as CustomParms;
+                }
+                if (parms != null)
+                {
+                    startSector = parms.ofs;
+                    sectors = parms.len / BK7231Flasher.SECTOR_SIZE;
+                    chosenSourceFile = parms.sourceFileName;
+                }
+                else
+                {
+                    startSector = getBackupStartSectorForCurrentPlatform();
+                    sectors = getBackupSectorCountForCurrentPlatform();
+                }
+                flasher.doReadAndWrite(startSector, sectors, chosenSourceFile, WriteMode.OnlyWrite);
+            });
         }
         void doOnlyFlashOBKConfig()
         {
-            clearUp();
-            createFlasher();
-            flasher.doReadAndWrite(0, 0, "", WriteMode.OnlyOBKConfig);
-            worker = null;
-            //setButtonReadLabel(label_startRead);
-            clearUp();
-            setButtonStates(true);
+            runFlasherAction(() => flasher.doReadAndWrite(0, 0, "", WriteMode.OnlyOBKConfig));
         }
         int getBackupStartSectorForCurrentPlatform()
         {
@@ -553,24 +548,18 @@ namespace BK7231Flasher
         }
         void restoreRF()
         {
-            clearUp();
-            createFlasher();
-            int startOfs = RFPartitionUtil.getRFOffset(curType);
-            byte[] data = RFPartitionUtil.constructRFDataFor(curType, BK7231Flasher.SECTOR_SIZE);
-            if(startOfs < 0 || data.Length == 0)
+            runFlasherAction(() =>
             {
-                worker = null;
-                clearUp();
-                setButtonStates(true);
-                if(startOfs < 0) addLog($"RF restore is not supported on {curType}" + Environment.NewLine, Color.Red);
-                else addLog("Generated RF partition is empty, not supported?" + Environment.NewLine, Color.DarkOrange);
-                return;
-            }
-            flasher.doWrite(startOfs, data);
-            worker = null;
-            //setButtonReadLabel(label_startRead);
-            clearUp();
-            setButtonStates(true);
+                int startOfs = RFPartitionUtil.getRFOffset(curType);
+                byte[] data = RFPartitionUtil.constructRFDataFor(curType, BK7231Flasher.SECTOR_SIZE);
+                if (startOfs < 0 || data.Length == 0)
+                {
+                    if (startOfs < 0) addLog($"RF restore is not supported on {curType}" + Environment.NewLine, Color.Red);
+                    else addLog("Generated RF partition is empty, not supported?" + Environment.NewLine, Color.DarkOrange);
+                    return;
+                }
+                flasher.doWrite(startOfs, data);
+            });
         }
         internal void restoreRFfromBackup(byte[] fileData)
         {
@@ -583,37 +572,29 @@ namespace BK7231Flasher
         }
         void restoreRFbkp(object fileData)
         {
-            createFlasher();
-            int startOfs = RFPartitionUtil.getRFOffset(curType);
-            byte[] data = RFPartitionUtil.getRFFromBackup((byte[])fileData, curType, out int addr);
-            if(startOfs < 0 || data.Length == 0)
+            runFlasherAction(() =>
             {
-                worker = null;
-                clearUp();
-                setButtonStates(true);
-                if(startOfs < 0) addLog($"RF restore is not supported on {curType}" + Environment.NewLine, Color.Red);
-                else addLog("RF partition not found in backup. You may need to use \"Restore RF part\"" + Environment.NewLine, Color.DarkOrange);
-                return;
-            }
-            addLog($"RF partition found at 0x{addr:X2}" + Environment.NewLine, Color.Green);
-            flasher.doWrite(startOfs, data);
-            worker = null;
-            //setButtonReadLabel(label_startRead);
-            clearUp();
-            setButtonStates(true);
+                int startOfs = RFPartitionUtil.getRFOffset(curType);
+                byte[] data = RFPartitionUtil.getRFFromBackup((byte[])fileData, curType, out int addr);
+                if (startOfs < 0 || data.Length == 0)
+                {
+                    if (startOfs < 0) addLog($"RF restore is not supported on {curType}" + Environment.NewLine, Color.Red);
+                    else addLog("RF partition not found in backup. You may need to use \"Restore RF part\"" + Environment.NewLine, Color.DarkOrange);
+                    return;
+                }
+                addLog($"RF partition found at 0x{addr:X2}" + Environment.NewLine, Color.Green);
+                flasher.doWrite(startOfs, data);
+            });
         }
 
         void eraseAll()
         {
-            clearUp();
-            createFlasher();
-            int startOfs = BK7231Flasher.BOOTLOADER_SIZE;
-            int sectors = (BK7231Flasher.FLASH_SIZE - startOfs) / BK7231Flasher.SECTOR_SIZE;
-            flasher.doErase(startOfs, sectors, true);
-            worker = null;
-            //setButtonReadLabel(label_startRead);
-            clearUp();
-            setButtonStates(true);
+            runFlasherAction(() =>
+            {
+                int startOfs = BK7231Flasher.BOOTLOADER_SIZE;
+                int sectors = (BK7231Flasher.FLASH_SIZE - startOfs) / BK7231Flasher.SECTOR_SIZE;
+                flasher.doErase(startOfs, sectors, true);
+            });
         }
         void verifyThread(object oParm)
         {
