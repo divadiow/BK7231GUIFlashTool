@@ -498,25 +498,18 @@ namespace BK7231Flasher
         {
             runFlasherAction(() =>
             {
-                int startSector;
-                int sectors;
-                CustomParms parms = null;
-                if (oParm != null)
+                CustomParms parms = oParm as CustomParms;
+                WriteOnlyResolvedRequest writeRequest = FlashWorkflowService.ResolveWriteOnlyRequest(new WriteOnlyRequest
                 {
-                    parms = oParm as CustomParms;
-                }
-                if (parms != null)
-                {
-                    startSector = parms.ofs;
-                    sectors = parms.len / BK7231Flasher.SECTOR_SIZE;
-                    chosenSourceFile = parms.sourceFileName;
-                }
-                else
-                {
-                    startSector = getBackupStartSectorForCurrentPlatform();
-                    sectors = getBackupSectorCountForCurrentPlatform();
-                }
-                flasher.doReadAndWrite(startSector, sectors, chosenSourceFile, WriteMode.OnlyWrite);
+                    ChipType = curType,
+                    CustomOffset = parms?.ofs,
+                    CustomLength = parms?.len,
+                    CustomSourceFile = parms?.sourceFileName,
+                    DefaultSourceFile = chosenSourceFile,
+                });
+
+                chosenSourceFile = writeRequest.SourceFile;
+                flasher.doReadAndWrite(writeRequest.StartSector, writeRequest.Sectors, chosenSourceFile, WriteMode.OnlyWrite);
             });
         }
         void doOnlyFlashOBKConfig()
@@ -525,28 +518,11 @@ namespace BK7231Flasher
         }
         int getBackupStartSectorForCurrentPlatform()
         {
-            switch(curType)
-            {
-                case BKType.BK7231T:
-                case BKType.BK7231U:
-                case BKType.BK7252:
-                    return BK7231Flasher.BOOTLOADER_SIZE;
-                default:
-                    return 0;
-
-            }
+            return FlashWorkflowService.GetBackupStartSectorForPlatform(curType);
         }
         int getBackupSectorCountForCurrentPlatform()
         {
-#if false
-            int sectors;
-            sectors = (BK7231Flasher.FLASH_SIZE - getBackupStartSectorForCurrentPlatform()) / BK7231Flasher.SECTOR_SIZE;
-            return sectors;
-#else
-            int sectors;
-            sectors = (BK7231Flasher.FLASH_SIZE) / BK7231Flasher.SECTOR_SIZE;
-            return sectors;
-#endif
+            return FlashWorkflowService.GetBackupSectorCountForPlatform();
         }
         void restoreRF()
         {
