@@ -4,7 +4,6 @@ using System.Collections.Generic;
 using System.Configuration;
 using System.Diagnostics;
 using System.Drawing;
-using System.Globalization;
 using System.IO;
 using System.IO.Ports;
 using System.Linq;
@@ -285,15 +284,6 @@ namespace BK7231Flasher
         {
             settings.Save("settings.cfg");
         }
-        int getBaudRateFromGUI()
-        {
-            if (BaudRateParser.TryParse(comboBoxBaudRate.Text, out int baudRate))
-            {
-                return baudRate;
-            }
-
-            return 0;
-        }
         public void setProgress(int cur, int max)
         {
             if (cur > max)
@@ -379,28 +369,26 @@ namespace BK7231Flasher
                 return false;
             }
             refreshType();
-            chosenBaudRate = getBaudRateFromGUI();
-            if (chosenBaudRate <= 0)
+
+            if (!OperationPreparationService.TryPrepare(
+                comboBoxBaudRate.Text,
+                comboBoxUART.Enabled,
+                getSelectedSerialName(),
+                textBox_cfg_readTimeOutMultForLoop.Text,
+                textBox_cfg_readTimeOutMultForSerialClass.Text,
+                textBox_cfg_readReplyStyle.Text,
+                out OperationPreparationResult preparationResult,
+                out string validationError))
             {
-                MessageBox.Show("Please enter a correct number for a baud rate.");
+                MessageBox.Show(validationError);
                 return false;
             }
-            if(comboBoxUART.Enabled)
-            {
-                serialName = getSelectedSerialName();
-                if (serialName.Length <= 0)
-                {
-                    MessageBox.Show("Please choose a correct serial port or connect one if not present.");
-                    return false;
-                }
-            }
-            else
-            {
-                serialName = "";
-            }
-            float.TryParse(textBox_cfg_readTimeOutMultForLoop.Text.Replace(',','.'),  NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture, out cfg_readTimeOutMultForLoop);
-            float.TryParse(textBox_cfg_readTimeOutMultForSerialClass.Text.Replace(',', '.'), NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture, out cfg_readTimeOutMultForSerialClass);
-            int.TryParse(textBox_cfg_readReplyStyle.Text.Replace(',', '.'), NumberStyles.Integer, CultureInfo.InvariantCulture, out cfg_readReplyStyle);
+
+            chosenBaudRate = preparationResult.BaudRate;
+            serialName = preparationResult.SerialName;
+            cfg_readReplyStyle = preparationResult.ReadReplyStyle;
+            cfg_readTimeOutMultForLoop = preparationResult.ReadTimeOutMultForLoop;
+            cfg_readTimeOutMultForSerialClass = preparationResult.ReadTimeOutMultForSerialClass;
 
             return true;
         }

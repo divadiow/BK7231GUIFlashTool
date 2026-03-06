@@ -138,6 +138,7 @@
     <Compile Include="Services\FlasherFactory.cs" />
     <Compile Include="Services\BaudRateParser.cs" />
     <Compile Include="Services\FlasherConfigurator.cs" />
+    <Compile Include="Services\OperationPreparationService.cs" />
     <Compile Include="Helpers\ILogListener.cs" />
     <Compile Include="Flashers\LN882HFlasher.cs" />
     <Compile Include="Utils\MiscUtils.cs" />
