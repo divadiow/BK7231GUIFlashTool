@@ -9,3 +9,5 @@ packages
 BuildVersion.cs
 backups/
 references/
+BK7231Flasher/Floaders/TR6260_Boot.bin
+BK7231Flasher/Floaders/TR6260_Partition.bin
