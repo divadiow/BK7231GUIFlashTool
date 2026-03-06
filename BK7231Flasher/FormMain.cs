@@ -614,47 +614,27 @@ namespace BK7231Flasher
         }
         void readThread(object oParm)
         {
-            bool isFullRead = true;
-            CustomParms parms = null;
-            if(oParm != null)
+            runFlasherAction(() =>
             {
-                parms = oParm as CustomParms;
-            }
-            clearUp();
-            createFlasher();
-            flasher.setBackupName(lastBackupNameEnteredByUser);
-            // thanks to wrap-around hack, we can read from start correctly
-            int startSector;
-            int sectors;
-            if (parms!= null)
-            {
-                startSector = parms.ofs;
-                if(curType == BKType.RTL8720D || curType == BKType.RTL87X0C || curType == BKType.RTL8710B)
-                    startSector /= BK7231Flasher.SECTOR_SIZE;
-                sectors = parms.len / BK7231Flasher.SECTOR_SIZE;
-                isFullRead = false;
-            }
-            else if(curType == BKType.BK7252)
-            {
-                startSector = 0x11000;
-                sectors = getBackupSectorCountForCurrentPlatform() - (startSector/ BK7231Flasher.SECTOR_SIZE);
-                addLog("^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*" + Environment.NewLine, Color.DarkOrange);
-                addLog("BK7252 mode - read offset is 0x11000, we can't access bootloader." + Environment.NewLine, Color.DarkOrange);
-                addLog("^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*" + Environment.NewLine, Color.DarkOrange);
-            }
-            else
-            {
-                startSector = 0x0;// getBackupStartSectorForCurrentPlatform();
-                sectors = getBackupSectorCountForCurrentPlatform();
-            }
-            flasher.doRead(startSector, sectors, isFullRead);
-            
-            flasher.saveReadResult(startSector);
+                CustomParms parms = oParm as CustomParms;
+                ReadResolvedRequest request = FlashWorkflowService.ResolveReadRequest(new ReadRequest
+                {
+                    ChipType = curType,
+                    CustomOffset = parms?.ofs,
+                    CustomLength = parms?.len,
+                });
 
-            worker = null;
-            //setButtonReadLabel(label_startRead);
-            clearUp();
-            setButtonStates(true);
+                flasher.setBackupName(lastBackupNameEnteredByUser);
+                if (request.RequiresBk7252Notice)
+                {
+                    addLog("^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*" + Environment.NewLine, Color.DarkOrange);
+                    addLog("BK7252 mode - read offset is 0x11000, we can't access bootloader." + Environment.NewLine, Color.DarkOrange);
+                    addLog("^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*^*" + Environment.NewLine, Color.DarkOrange);
+                }
+
+                flasher.doRead(request.StartSector, request.Sectors, request.IsFullRead);
+                flasher.saveReadResult(request.StartSector);
+            });
         }
         void blankThread(object oParm)
         {
