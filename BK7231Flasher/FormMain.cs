@@ -476,10 +476,12 @@ namespace BK7231Flasher
         {
             runFlasherAction(() =>
             {
-                flasher.setBackupName(lastBackupNameEnteredByUser);
-                int startSector = getBackupStartSectorForCurrentPlatform();
-                int sectors = getBackupSectorCountForCurrentPlatform();
-                flasher.doReadAndWrite(startSector, sectors, chosenSourceFile, WriteMode.ReadAndWrite);
+                FlashWorkflowService.RunBackupAndFlash(flasher, new BackupAndFlashRequest
+                {
+                    ChipType = curType,
+                    BackupName = lastBackupNameEnteredByUser,
+                    SourceFile = chosenSourceFile,
+                });
             });
         }
         internal void doCustomWrite(CustomParms cp)
