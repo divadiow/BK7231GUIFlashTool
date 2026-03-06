@@ -205,9 +205,7 @@ namespace BK7231Flasher
                 comboBoxChipType.Items.Add(new ChipType(chip.Key, chip.Value));
             }
 
-            // Safety net: ensure TR6260 is visible even if dictionary/regression misses it.
-            bool hasTR6260 = comboBoxChipType.Items.Cast<ChipType>().Any(x => x.Type == BKType.TR6260);
-            if(!hasTR6260)
+            if(comboBoxChipType.Items.Cast<ChipType>().Any(x => x.Type == BKType.TR6260) == false)
             {
                 comboBoxChipType.Items.Add(new ChipType(BKType.TR6260, "TR6260"));
             }
