@@ -13,6 +13,7 @@ using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
+using BK7231Flasher.Services;
 
 namespace BK7231Flasher
 {
@@ -26,38 +27,6 @@ namespace BK7231Flasher
         int firmwareComboWidthAdvanced = -1;
         FormCustom formCustom;
         CancellationTokenSource cts;
-
-        public Dictionary<BKType, string> Chips = new Dictionary<BKType, string>()
-        {
-            { BKType.BK7231T,    "BK7231T" },
-            { BKType.BK7231U,    "BK7231U" },
-            { BKType.BK7231N,    "BK7231N (T2, T34)" },
-            { BKType.BK7231M,    "BK7231M" },
-            { BKType.BK7236,     "BK7236 (T3)" },
-            { BKType.BK7238,     "BK7238 (T1)" },
-            { BKType.BK7252,     "BK7252" },
-            { BKType.BK7252N,    "BK7252N (T4)" },
-            { BKType.BK7258,     "BK7258 (T5)" },
-            { BKType.RTL8710B,   "RTL8710B (AmebaZ)" },
-            { BKType.RTL87X0C,   "RTL87X0C (AmebaZ2)" },
-            { BKType.RTL8720D,   "RTL8720DN (AmebaD)" },
-            { BKType.LN882H,     "LN882H" },
-            { BKType.LN8825,     "LN8825" },
-            { BKType.BL602,      "BL602" },
-            { BKType.BL702,      "BL702" },
-            { BKType.ECR6600,    "ECR6600" },
-            { BKType.W800,       "W800" },
-            { BKType.W600,       "W600 (write)" },
-            { BKType.RDA5981,    "RDA5981" },
-            { BKType.BekenSPI,   "Beken SPI CH341" },
-            { BKType.GenericSPI, "Generic SPI CH341" },
-            { BKType.ESP32,      "ESP32" },
-            { BKType.ESP32S3,    "ESP32-S3" },
-            { BKType.ESP32C3,    "ESP32-C3" },
-            { BKType.ESP8266,    "ESP8266" },
-        };
-
-        public readonly int[] BaudRates = new int[] { 115200, 230400, 460800, 921600, 1500000, 2000000, 3000000, /*4000000, 6000000*/ };
 
         public FormMain()
         {
@@ -74,40 +43,24 @@ namespace BK7231Flasher
 
         void setPorts(string [] newPorts)
         {
-            if(allPorts != null)
+            if (ComPortSelectionService.ArePortsSame(allPorts, newPorts))
             {
-                if(allPorts.Length == newPorts.Length)
-                {
-                    bool bChange = false;
-                    for(int i = 0; i < allPorts.Length; i++)
-                    {
-                        if(allPorts[i] != newPorts[i])
-                        {
-                            bChange = true;
-                            break;
-                        }
-                    }
-                    if(bChange == false)
-                    {
-                        return;
-                    }
-                }
+                return;
             }
 
-            string prevPort = "";
+            string prevPort = null;
             if(comboBoxUART.SelectedIndex != -1)
             {
                 prevPort = comboBoxUART.SelectedItem.ToString();
             }
             allPorts = newPorts;
             comboBoxUART.Items.Clear();
-            int newIndex = allPorts.Length - 1;
             for(int i = 0; i <  allPorts.Length; i++)
             {
-                if (prevPort == allPorts[i])
-                    newIndex = i;
                 comboBoxUART.Items.Add(allPorts[i]);
             }
+
+            int newIndex = ComPortSelectionService.ResolveSelectedIndex(prevPort, allPorts);
             if(newIndex != -1)
             {
                 comboBoxUART.SelectedIndex = newIndex;
@@ -199,13 +152,13 @@ namespace BK7231Flasher
             comboBoxUART.DropDownStyle = ComboBoxStyle.DropDownList;
             comboBoxFirmware.DropDownStyle = ComboBoxStyle.DropDownList;
 
-            foreach(var chip in Chips)
+            foreach(var chip in ChipCatalog.Chips)
             {
                 comboBoxChipType.Items.Add(new ChipType(chip.Key, chip.Value));
             }
 
             comboBoxChipType.SelectedIndex = 0;
-            foreach(var baud in BaudRates)
+            foreach(var baud in ChipCatalog.BaudRates)
             {
                 comboBoxBaudRate.Items.Add(baud);
             }
@@ -334,16 +287,12 @@ namespace BK7231Flasher
         }
         int getBaudRateFromGUI()
         {
-            int r = 0;
-            try
+            if (BaudRateParser.TryParse(comboBoxBaudRate.Text, out int baudRate))
             {
-                r = int.Parse(comboBoxBaudRate.Text);
+                return baudRate;
             }
-            catch(Exception ex)
-            {
-                return 0;
-            }
-            return r;
+
+            return 0;
         }
         public void setProgress(int cur, int max)
         {
@@ -478,58 +427,19 @@ namespace BK7231Flasher
         
         void createFlasher()
         {
-            switch(curType)
-            {
-                case BKType.RTL8710B:
-                case BKType.RTL8720D:
-                case BKType.RTL8721DA:
-                case BKType.RTL8720E:
-                    flasher = new RTLFlasher(cts.Token);
-                    break;
-                case BKType.RTL87X0C:
-                    flasher = new RTLZ2Flasher(cts.Token);
-                    break;
-                case BKType.LN882H:
-                case BKType.LN8825:
-                    flasher = new LN882HFlasher(cts.Token);
-                    break;
-                case BKType.BL602:
-                case BKType.BL702:
-                    flasher = new BL602Flasher(cts.Token);
-                    break;
-                case BKType.BekenSPI:
-                    flasher = new SPIFlasher_Beken(cts.Token);
-                    break;
-                case BKType.GenericSPI:
-                    flasher = new SPIFlasher(cts.Token);
-                    break;
-                case BKType.ECR6600:
-                    flasher = new ECR6600Flasher(cts.Token);
-                    break;
-                case BKType.W600:
-                case BKType.W800:
-                    flasher = new WMFlasher(cts.Token);
-                    break;
-                case BKType.RDA5981:
-                    flasher = new RDAFlasher(cts.Token);
-                    break;
-                case BKType.ESP32:
-                case BKType.ESP32S3:
-                case BKType.ESP32C3:
-                case BKType.ESP8266:
-                    flasher = new ESPFlasher(cts.Token);
-                    break;
-                default:
-                    flasher = new BK7231Flasher(cts.Token);
-                    break;
-            }
-            flasher.setBasic(this, serialName, curType, chosenBaudRate);
-            flasher.setReadReplyStyle(cfg_readReplyStyle);
-            flasher.setReadTimeOutMultForLoop(cfg_readTimeOutMultForLoop);
-            flasher.setReadTimeOutMultForSerialClass(cfg_readTimeOutMultForSerialClass);
-            flasher.setOverwriteBootloader(checkBoxOverwriteBootloader.Checked);
-            flasher.setSkipKeyCheck(checkBoxSkipKeyCheck.Checked);
-            flasher.setIgnoreCRCErr(chkIgnoreCRCErr.Checked);
+            flasher = FlasherFactory.Create(curType, cts.Token);
+            FlasherConfigurator.Configure(
+                flasher,
+                this,
+                serialName,
+                curType,
+                chosenBaudRate,
+                cfg_readReplyStyle,
+                cfg_readTimeOutMultForLoop,
+                cfg_readTimeOutMultForSerialClass,
+                checkBoxOverwriteBootloader.Checked,
+                checkBoxSkipKeyCheck.Checked,
+                chkIgnoreCRCErr.Checked);
         }
         
         void testWrite()

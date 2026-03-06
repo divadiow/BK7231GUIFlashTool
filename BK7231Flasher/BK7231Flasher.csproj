@@ -59,6 +59,7 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Misc\BL602FlashList.cs" />
+    <Compile Include="Misc\ChipCatalog.cs" />
     <Compile Include="Misc\BL602Utils.cs" />
     <Compile Include="Utils\Beken_Crypto.cs" />
     <Compile Include="FormMain.Decryption.cs">
@@ -133,6 +134,10 @@
       <DependentUpon>FormPrompt.cs</DependentUpon>
     </Compile>
     <Compile Include="Helpers\ConsoleLogListener.cs" />
+    <Compile Include="Services\ComPortSelectionService.cs" />
+    <Compile Include="Services\FlasherFactory.cs" />
+    <Compile Include="Services\BaudRateParser.cs" />
+    <Compile Include="Services\FlasherConfigurator.cs" />
     <Compile Include="Helpers\ILogListener.cs" />
     <Compile Include="Flashers\LN882HFlasher.cs" />
     <Compile Include="Utils\MiscUtils.cs" />
