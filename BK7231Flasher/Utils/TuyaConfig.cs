@@ -26,6 +26,7 @@ namespace BK7231Flasher
         static readonly byte[] KEY_NULL = DeriveVaultKey(KEY_PART_2, KEY_PART_2);
         static readonly byte[] KEY_PART_1_D = Encoding.ASCII.GetBytes("8721D");
         static readonly byte[] KEY_PART_1_AM = Encoding.ASCII.GetBytes("8711AM_4M");
+        static readonly byte[] KEY_PART_1_RDA = Encoding.ASCII.GetBytes("RDA5981_2M");        
         //static byte[] MAGIC_CONFIG_START = new byte[] { 0x46, 0xDC, 0xED, 0x0E, 0x67, 0x2F, 0x3B, 0x70, 0xAE, 0x12, 0x76, 0xA3, 0xF8, 0x71, 0x2E, 0x03 };
         // TODO: check more bins with this offset
         // hex 0x1EE000
@@ -952,6 +953,7 @@ List<KvEntry> GetVaultEntriesDedupedCached()
                 KEY_PART_1_D,
                 KEY_PART_2,
                 KEY_PART_1_AM,
+                KEY_PART_1_RDA,
             };
 
             var pageMagics = new uint[] { MAGIC_NEXT_BLOCK, MAGIC_FIRST_BLOCK_OS3, MAGIC_FIRST_BLOCK };
