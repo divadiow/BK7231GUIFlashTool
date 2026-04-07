@@ -26,7 +26,7 @@ namespace BK7231Flasher
         static readonly byte[] KEY_NULL = DeriveVaultKey(KEY_PART_2, KEY_PART_2);
         static readonly byte[] KEY_PART_1_D = Encoding.ASCII.GetBytes("8721D");
         static readonly byte[] KEY_PART_1_AM = Encoding.ASCII.GetBytes("8711AM_4M");
-        static readonly byte[] KEY_PART_1_RDA = Encoding.ASCII.GetBytes("RDA5981_2M");        
+        static readonly byte[] KEY_PART_1_RDA = Encoding.ASCII.GetBytes("RDA5981_2M");
         //static byte[] MAGIC_CONFIG_START = new byte[] { 0x46, 0xDC, 0xED, 0x0E, 0x67, 0x2F, 0x3B, 0x70, 0xAE, 0x12, 0x76, 0xA3, 0xF8, 0x71, 0x2E, 0x03 };
         // TODO: check more bins with this offset
         // hex 0x1EE000
@@ -1749,11 +1749,15 @@ List<KvEntry> GetVaultEntriesDedupedCached()
             {
                 desc += "Baud keyword found, this device may be TuyaMCU or BL0942. Baud value is " + baud + Environment.NewLine;
             }
+            string inferredModuleType = null;
+            string inferredPlatformType = null;
+
             var kp = FindKeyValueIn(source, "module");
             kp ??= FindKeyContainingIn(source, "module");
             if (kp != null)
             {
                 var type = TuyaModules.getTypeForModuleName(kp);
+                inferredModuleType = type;
                 desc += "Device seems to be using " + kp + " module";
                 if(type != nameof(BKType.Invalid))
                 {
@@ -1773,6 +1777,7 @@ List<KvEntry> GetVaultEntriesDedupedCached()
             {
                 desc += Environment.NewLine;
                 var type = TuyaModules.getTypeForPlatformName(kp);
+                inferredPlatformType = type;
                 desc += $"Device internal platform - {kp}";
                 if(type != nameof(BKType.Invalid))
                 {
@@ -1788,6 +1793,17 @@ List<KvEntry> GetVaultEntriesDedupedCached()
             {
                 desc += $"And the Tuya section starts at {getMagicPositionDecAndHex()}, which is a default {device} offset." + Environment.NewLine;
             }
+
+            var inferredType = inferredPlatformType != null && inferredPlatformType != nameof(BKType.Invalid)
+                ? inferredPlatformType
+                : inferredModuleType;
+
+            if(magicPosition == USUAL_RTLB_XR809_MAGIC_POSITION && inferredType == nameof(BKType.RDA5981))
+            {
+                desc += $"And the Tuya section starts at {getMagicPositionDecAndHex()}. This shared offset is usually reported as RTL8710B/XR809/BK7231Q, but the module/platform metadata indicates RDA5981." + Environment.NewLine;
+                return desc;
+            }
+
             switch(magicPosition)
             {
                 case 0:

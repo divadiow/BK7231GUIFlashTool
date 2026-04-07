@@ -9,9 +9,14 @@
         //};
         public static string getTypeForModuleName(string s)
         {
-            if (s.Length == 0)
+            if (string.IsNullOrEmpty(s))
                 return nameof(BKType.Invalid);
             s = s.ToUpper();
+            switch(s)
+            {
+                case "WRD8P":
+                    return nameof(BKType.RDA5981);
+            }
             switch(s[0])
             {
                 case 'W':
@@ -62,6 +67,8 @@
             "rtl8711am_zb_gw_ame" => "RTL8711AM",
             "bk7231"              => "BK7231Q",
             "RTL8710BN_2M"        => nameof(BKType.RTL8710B),
+            "RDA5981_2M"         => nameof(BKType.RDA5981),
+            "RDA5981"            => nameof(BKType.RDA5981),
 
             // unconfirmed, from tuya names
             "T3"                  => nameof(BKType.BK7236),
