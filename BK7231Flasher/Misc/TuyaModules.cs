@@ -68,7 +68,6 @@
             "bk7231"              => "BK7231Q",
             "RTL8710BN_2M"        => nameof(BKType.RTL8710B),
             "RDA5981_2M"         => nameof(BKType.RDA5981),
-            "RDA5981"            => nameof(BKType.RDA5981),
 
             // unconfirmed, from tuya names
             "T3"                  => nameof(BKType.BK7236),
