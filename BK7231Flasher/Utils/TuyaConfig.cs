@@ -78,6 +78,15 @@ namespace BK7231Flasher
         List<KvEntry> _cachedEnhancedEntries;
         byte[] _cachedEnhancedEntriesSource;
 
+        // Fallback app-region OEM config cache. Some Tuya firmwares keep IO assignments
+        // as JSON-ish OEM text in the app image rather than in user_param_key/baud_cfg.
+        // This must not alter the normal KV/PSM extraction output; it is used only when
+        // the decoded KV data contains no usable IO mapping.
+        Dictionary<string, string> _cachedOemAppConfigParms;
+        byte[] _cachedOemAppConfigSource;
+        int _cachedOemAppConfigOffset = -1;
+        string _cachedOemAppConfigText;
+
 
         class VaultPage
         {
@@ -903,6 +912,12 @@ List<KvEntry> GetVaultEntriesDedupedCached()
             vaultDecryptedRaw = null;
             bVaultMagicHeaderNotFound = false;
             original = data;
+
+            _cachedOemAppConfigParms = null;
+            _cachedOemAppConfigSource = null;
+            _cachedOemAppConfigOffset = -1;
+            _cachedOemAppConfigText = null;
+
             if (isFullOf(data, 0xff))
             {
                 FormMain.Singleton?.addLog("It seems that dragged binary is full of 0xff, someone must have erased the flash" + Environment.NewLine, System.Drawing.Color.Purple);
@@ -1285,32 +1300,60 @@ List<KvEntry> GetVaultEntriesDedupedCached()
 
         public string getKeysHumanReadable(OBKConfig tg = null)
         {
+            if (HasIoPinMapping(parms))
+                return GetKeysHumanReadableInternal(parms, tg);
+
+            var oemFallback = GetOemAppConfigParmsCached();
+            if (HasIoPinMapping(oemFallback))
+            {
+                string oemMappingNotes;
+                var oemMapping = BuildObkMappingParmsFromOemFallback(oemFallback, out oemMappingNotes);
+                if (HasIoPinMapping(oemMapping))
+                    return AppendOemAppConfigNote(GetKeysHumanReadableInternal(oemMapping, tg), oemMappingNotes);
+            }
+
             return GetKeysHumanReadableInternal(parms, tg);
         }
 
         // When enhanced extraction is enabled, prefer key/value pairs reconstructed from the enhanced
         // vault entries. This allows the text description to still show pins/modules even when the
         // classic extraction picked a fallback (e.g. baud_cfg) due to a checksum-bad user_param_key.
+        // If neither classic nor enhanced KV contains pin mappings, fall back to validated OEM app
+        // config text embedded in the original dump.
         public string getKeysHumanReadableEnhanced(OBKConfig tg = null)
         {
             var enhanced = GetEnhancedParmsCached();
-            if (enhanced == null || enhanced.Count == 0)
-                return GetKeysHumanReadableInternal(parms, tg);
 
-            // If enhanced produced no pin/module-ish keys, keep classic behavior.
-            bool enhancedLooksUseful = enhanced.Keys.Any(k => k.EndsWith("_pin", StringComparison.Ordinal) || k.IndexOf("pin", StringComparison.OrdinalIgnoreCase) >= 0 || k.Equals("module", StringComparison.Ordinal));
-            if (!enhancedLooksUseful)
-                return GetKeysHumanReadableInternal(parms, tg);
-
-            var enhancedDesc = GetKeysHumanReadableInternal(enhanced, tg);
-
-            // Safety: if enhanced still couldn't recover any pins but classic did, fall back.
-            if (enhancedDesc != null && enhancedDesc.StartsWith("Sorry, no meaningful pins", StringComparison.Ordinal) &&
-                !GetKeysHumanReadableInternal(parms, null).StartsWith("Sorry, no meaningful pins", StringComparison.Ordinal))
+            if (HasIoPinMapping(enhanced))
             {
-                return GetKeysHumanReadableInternal(parms, tg);
+                var enhancedDesc = GetKeysHumanReadableInternal(enhanced, tg);
+
+                // Safety: if enhanced still couldn't render useful pins but classic can, fall back.
+                if (enhancedDesc != null && enhancedDesc.StartsWith("Sorry, no meaningful pins", StringComparison.Ordinal) &&
+                    HasIoPinMapping(parms))
+                {
+                    return GetKeysHumanReadableInternal(parms, tg);
+                }
+
+                return enhancedDesc;
             }
-            return enhancedDesc;
+
+            if (HasIoPinMapping(parms))
+                return GetKeysHumanReadableInternal(parms, tg);
+
+            var oemFallback = GetOemAppConfigParmsCached();
+            if (HasIoPinMapping(oemFallback))
+            {
+                string oemMappingNotes;
+                var oemMapping = BuildObkMappingParmsFromOemFallback(oemFallback, out oemMappingNotes);
+                if (HasIoPinMapping(oemMapping))
+                    return AppendOemAppConfigNote(GetKeysHumanReadableInternal(oemMapping, tg), oemMappingNotes);
+            }
+
+            if (enhanced != null && enhanced.Count > 0)
+                return GetKeysHumanReadableInternal(enhanced, tg);
+
+            return GetKeysHumanReadableInternal(parms, tg);
         }
 
         string GetKeysHumanReadableInternal(Dictionary<string, string> source, OBKConfig tg = null)
@@ -1376,6 +1419,10 @@ List<KvEntry> GetVaultEntriesDedupedCached()
                         break;
                     case var k when Regex.IsMatch(k, "one_wire_pin"):
                         desc += "- OneWire IO pin on P" + value + Environment.NewLine;
+                        break;
+                    case "zero_io_pin":
+                        desc += "- Zero-cross / zero detect on P" + value + Environment.NewLine;
+                        tg?.setPinRole(value, PinRole.dInput);
                         break;
                     case var k when Regex.IsMatch(k, "backlit_io_pin"):
                         desc += "- Backlit IO pin on P" + value + Environment.NewLine;
@@ -1881,6 +1928,512 @@ List<KvEntry> GetVaultEntriesDedupedCached()
             return null;
         }
 
+
+        string AppendOemAppConfigNote(string desc, string extraNotes = null)
+        {
+            if (desc == null)
+                desc = "";
+
+            if (_cachedOemAppConfigOffset >= 0)
+            {
+                desc += "Pin mapping was recovered from fallback OEM app config at 0x" +
+                    _cachedOemAppConfigOffset.ToString("X") +
+                    ", because the decrypted KV did not contain usable IO pin data." +
+                    Environment.NewLine;
+            }
+
+            if (!string.IsNullOrWhiteSpace(extraNotes))
+                desc += extraNotes;
+
+            return desc;
+        }
+
+        static Dictionary<string, string> BuildObkMappingParmsFromOemFallback(Dictionary<string, string> source, out string notes)
+        {
+            notes = "";
+            var result = new Dictionary<string, string>(StringComparer.Ordinal);
+            if (source == null || source.Count == 0)
+                return result;
+
+            foreach (var kv in source)
+            {
+                string key = kv.Key;
+                if (string.IsNullOrWhiteSpace(key))
+                    continue;
+
+                if (string.Equals(key, "crc", StringComparison.Ordinal))
+                    continue;
+
+                if (!result.ContainsKey(key))
+                    result[key] = kv.Value;
+            }
+
+            CollapseSamePinBridgeRelayMappings(result);
+            notes = RemoveDuplicateRelayPinMappings(result);
+
+            return result;
+        }
+
+        static void CollapseSamePinBridgeRelayMappings(Dictionary<string, string> parmsToMap)
+        {
+            if (parmsToMap == null || parmsToMap.Count == 0)
+                return;
+
+            for (int channel = 0; channel <= 32; channel++)
+            {
+                string onKey = "rl_on" + channel + "_pin";
+                string offKey = "rl_off" + channel + "_pin";
+                if (!parmsToMap.TryGetValue(onKey, out var onPin))
+                    continue;
+                if (!parmsToMap.TryGetValue(offKey, out var offPin))
+                    continue;
+                if (!AreSamePlausiblePinValue(onPin, offPin))
+                    continue;
+
+                string relayKey = "rl" + channel + "_pin";
+                if (!parmsToMap.ContainsKey(relayKey))
+                    parmsToMap[relayKey] = NormalizePinValueText(onPin);
+
+                parmsToMap.Remove(onKey);
+                parmsToMap.Remove(offKey);
+            }
+        }
+
+        static string RemoveDuplicateRelayPinMappings(Dictionary<string, string> parmsToMap)
+        {
+            if (parmsToMap == null || parmsToMap.Count == 0)
+                return "";
+
+            var firstRelayByPin = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var removeKeys = new List<string>();
+            var notes = new List<string>();
+
+            var relayPinEntries = parmsToMap
+                .Where(kv => Regex.IsMatch(kv.Key ?? "", @"^rl\d+_pin$") && IsPlausiblePinValue(kv.Value))
+                .OrderBy(kv => GetRelayChannelNumber(kv.Key))
+                .ThenBy(kv => kv.Key)
+                .ToList();
+
+            foreach (var kv in relayPinEntries)
+            {
+                string key = kv.Key ?? "";
+                string pin = NormalizePinValueText(kv.Value);
+                if (firstRelayByPin.TryGetValue(pin, out var existingKey))
+                {
+                    removeKeys.Add(key);
+                    notes.Add("OEM fallback config also listed " + FormatRelayMappingForNote(key) +
+                        " on P" + pin + ", already used by " + FormatRelayMappingForNote(existingKey) +
+                        ". It was not auto-mapped to avoid duplicate/conflicting OBK pin assignment." +
+                        Environment.NewLine);
+                }
+                else
+                {
+                    firstRelayByPin[pin] = key;
+                }
+            }
+
+            foreach (var key in removeKeys)
+                parmsToMap.Remove(key);
+
+            if (notes.Count == 0)
+                return "";
+
+            return string.Concat(notes);
+        }
+
+        static int GetRelayChannelNumber(string key)
+        {
+            if (string.IsNullOrWhiteSpace(key))
+                return int.MaxValue;
+
+            var m = Regex.Match(key, @"^rl(\d+)_pin$");
+            if (m.Success && int.TryParse(m.Groups[1].Value, out int channel))
+                return channel;
+
+            return int.MaxValue;
+        }
+
+        static string FormatRelayMappingForNote(string key)
+        {
+            if (string.IsNullOrWhiteSpace(key))
+                return "relay mapping";
+
+            var m = Regex.Match(key, @"^rl(\d+)_pin$");
+            if (m.Success)
+                return "relay channel " + m.Groups[1].Value;
+
+            return key;
+        }
+
+        static bool AreSamePlausiblePinValue(string a, string b)
+        {
+            if (!IsPlausiblePinValue(a) || !IsPlausiblePinValue(b))
+                return false;
+
+            return string.Equals(NormalizePinValueText(a), NormalizePinValueText(b), StringComparison.OrdinalIgnoreCase);
+        }
+
+        static string NormalizePinValueText(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return "";
+
+            value = value.Trim().Trim('"');
+            if (value.StartsWith("P", StringComparison.OrdinalIgnoreCase))
+                value = value.Substring(1);
+
+            return value;
+        }
+
+        static bool HasIoPinMapping(Dictionary<string, string> source)
+        {
+            return CountNumericIoPinKeys(source) > 0;
+        }
+
+        static int CountNumericIoPinKeys(Dictionary<string, string> source)
+        {
+            if (source == null || source.Count == 0)
+                return 0;
+
+            int count = 0;
+            foreach (var kv in source)
+            {
+                if (IsIoPinMappingKey(kv.Key) && IsPlausiblePinValue(kv.Value))
+                    count++;
+            }
+            return count;
+        }
+
+        static bool IsIoPinMappingKey(string key)
+        {
+            if (string.IsNullOrWhiteSpace(key))
+                return false;
+
+            key = key.Trim();
+            string lower = key.ToLowerInvariant();
+
+            if (lower.EndsWith("_lv", StringComparison.Ordinal) ||
+                lower.EndsWith("_type", StringComparison.Ordinal) ||
+                lower.EndsWith("_drvtime", StringComparison.Ordinal))
+                return false;
+
+            if (lower.EndsWith("_pin", StringComparison.Ordinal) ||
+                lower.IndexOf("pin", StringComparison.Ordinal) >= 0)
+                return true;
+
+            switch (lower)
+            {
+                case "rl":
+                case "bt":
+                case "wfst":
+                case "epin":
+                case "ivpin":
+                case "ivcpin":
+                case "irpin":
+                case "infrr":
+                case "infre":
+                case "mosi":
+                case "miso":
+                case "scl":
+                case "cs":
+                case "iicscl":
+                case "iicsda":
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        static bool IsPlausiblePinValue(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return false;
+
+            value = value.Trim().Trim('"');
+            if (value.StartsWith("P", StringComparison.OrdinalIgnoreCase))
+                value = value.Substring(1);
+
+            if (!int.TryParse(value, out int pin))
+                return false;
+
+            return pin >= -1 && pin <= 255;
+        }
+
+        Dictionary<string, string> GetOemAppConfigParmsCached()
+        {
+            var src = original;
+            if (src == null || src.Length == 0)
+                return null;
+
+            if (_cachedOemAppConfigParms != null && object.ReferenceEquals(_cachedOemAppConfigSource, src))
+                return _cachedOemAppConfigParms;
+
+            _cachedOemAppConfigParms = new Dictionary<string, string>();
+            _cachedOemAppConfigSource = src;
+            _cachedOemAppConfigOffset = -1;
+            _cachedOemAppConfigText = null;
+
+            try
+            {
+                if (TryFindOemAppConfig(src, out var foundParms, out int foundOffset, out string foundText))
+                {
+                    _cachedOemAppConfigParms = foundParms;
+                    _cachedOemAppConfigOffset = foundOffset;
+                    _cachedOemAppConfigText = foundText;
+
+                    FormMain.Singleton?.addLog(
+                        "Recovered fallback OEM app config at 0x" + foundOffset.ToString("X") +
+                        "; it will be used only when decrypted KV has no IO pin mapping." +
+                        Environment.NewLine,
+                        System.Drawing.Color.DarkSlateGray);
+                }
+            }
+            catch
+            {
+                _cachedOemAppConfigParms = new Dictionary<string, string>();
+                _cachedOemAppConfigOffset = -1;
+                _cachedOemAppConfigText = null;
+            }
+
+            return _cachedOemAppConfigParms;
+        }
+
+        static bool TryFindOemAppConfig(byte[] flash, out Dictionary<string, string> bestParms, out int bestOffset, out string bestText)
+        {
+            bestParms = null;
+            bestOffset = -1;
+            bestText = null;
+
+            if (flash == null || flash.Length < 64)
+                return false;
+
+            int bestScore = 0;
+            int maxWindow = 4096;
+
+            for (int ofs = 0; ofs < flash.Length; ofs++)
+            {
+                if (flash[ofs] != (byte)'{')
+                    continue;
+
+                if (!RawWindowContainsAscii(flash, ofs, maxWindow, "pin"))
+                    continue;
+
+                for (int phase = -1; phase < 34; phase++)
+                {
+                    string ascii = ExtractPrintableAsciiWindow(flash, ofs, maxWindow, phase);
+                    if (string.IsNullOrWhiteSpace(ascii) || ascii.Length < 32 || ascii[0] != '{')
+                        continue;
+
+                    if (!LooksLikeOemAppConfigText(ascii))
+                        continue;
+
+                    if (!TryExtractBalancedJson(ascii, 0, out _, out string candidate))
+                        continue;
+
+                    if (!TryParseTuyaObjectPairsFromBytes(Encoding.ASCII.GetBytes(candidate), out var parsed) || parsed.Count == 0)
+                        continue;
+
+                    int score = ScoreOemAppConfigCandidate(parsed, out int numericPinCount);
+                    if (numericPinCount < 2 || score < 30)
+                        continue;
+
+                    if (score > bestScore)
+                    {
+                        bestScore = score;
+                        bestOffset = ofs;
+                        bestText = candidate;
+                        bestParms = CleanOemAppConfigParms(parsed);
+                    }
+                }
+            }
+
+            return bestParms != null && bestParms.Count > 0 && HasIoPinMapping(bestParms);
+        }
+
+        static bool RawWindowContainsAscii(byte[] data, int start, int maxBytes, string marker)
+        {
+            if (data == null || string.IsNullOrEmpty(marker))
+                return false;
+
+            byte[] m = Encoding.ASCII.GetBytes(marker);
+            int end = Math.Min(data.Length, start + Math.Max(maxBytes, m.Length));
+            for (int i = start; i + m.Length <= end; i++)
+            {
+                bool ok = true;
+                for (int j = 0; j < m.Length; j++)
+                {
+                    if (data[i + j] != m[j])
+                    {
+                        ok = false;
+                        break;
+                    }
+                }
+
+                if (ok)
+                    return true;
+            }
+
+            return false;
+        }
+
+        static string ExtractPrintableAsciiWindow(byte[] data, int start, int maxBytes, int protectedLayoutPhase)
+        {
+            if (data == null || start < 0 || start >= data.Length)
+                return "";
+
+            int end = Math.Min(data.Length, start + Math.Max(maxBytes, 0));
+            var sb = new StringBuilder(end - start);
+
+            for (int i = start; i < end; i++)
+            {
+                if (protectedLayoutPhase >= 0)
+                {
+                    int rel = (i - protectedLayoutPhase) % 34;
+                    if (rel < 0)
+                        rel += 34;
+
+                    // Some BK/Tuya app strings are stored as 32 bytes of payload followed by
+                    // 2 check/protection bytes. The check bytes may themselves be printable,
+                    // so removing only non-ASCII is not reliable.
+                    if (rel == 32 || rel == 33)
+                        continue;
+                }
+
+                byte b = data[i];
+                if (b == 0x09 || b == 0x0A || b == 0x0D || (b >= 0x20 && b <= 0x7E))
+                    sb.Append((char)b);
+            }
+
+            return sb.ToString();
+        }
+
+        static bool LooksLikeOemAppConfigText(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text))
+                return false;
+
+            int pinMarkers = CountOccurrences(text, "_pin:") + CountOccurrences(text, "pin:");
+            if (pinMarkers < 2)
+                return false;
+
+            return text.IndexOf("module:", StringComparison.Ordinal) >= 0 ||
+                   text.IndexOf("ch_num:", StringComparison.Ordinal) >= 0 ||
+                   text.IndexOf("chip_type:", StringComparison.Ordinal) >= 0 ||
+                   text.IndexOf("crc:", StringComparison.Ordinal) >= 0 ||
+                   text.IndexOf("net_trig:", StringComparison.Ordinal) >= 0 ||
+                   text.IndexOf("rl_on", StringComparison.Ordinal) >= 0 ||
+                   text.IndexOf("bt", StringComparison.Ordinal) >= 0;
+        }
+
+        static int CountOccurrences(string text, string needle)
+        {
+            if (string.IsNullOrEmpty(text) || string.IsNullOrEmpty(needle))
+                return 0;
+
+            int count = 0;
+            int at = 0;
+            while (true)
+            {
+                at = text.IndexOf(needle, at, StringComparison.Ordinal);
+                if (at < 0)
+                    return count;
+
+                count++;
+                at += needle.Length;
+            }
+        }
+
+        static int ScoreOemAppConfigCandidate(Dictionary<string, string> parsed, out int numericPinCount)
+        {
+            numericPinCount = CountNumericIoPinKeys(parsed);
+            if (parsed == null || parsed.Count == 0 || numericPinCount < 2)
+                return 0;
+
+            bool hasStructuralKey =
+                parsed.ContainsKey("module") ||
+                parsed.ContainsKey("ch_num") ||
+                parsed.ContainsKey("jv") ||
+                parsed.ContainsKey("chip_type") ||
+                parsed.ContainsKey("crc") ||
+                parsed.ContainsKey("net_trig") ||
+                parsed.ContainsKey("ele_fun_en");
+
+            if (!hasStructuralKey)
+                return 0;
+
+            int score = numericPinCount * 5;
+
+            if (parsed.ContainsKey("module")) score += 10;
+            if (parsed.ContainsKey("ch_num")) score += 8;
+            if (parsed.ContainsKey("crc")) score += 6;
+            if (parsed.ContainsKey("jv")) score += 4;
+            if (parsed.ContainsKey("chip_type")) score += 4;
+            if (parsed.ContainsKey("net_trig")) score += 4;
+
+            foreach (var kv in parsed)
+            {
+                string key = kv.Key ?? "";
+                if (key.EndsWith("_lv", StringComparison.Ordinal) && IsPlausiblePinValue(kv.Value))
+                    score += 2;
+
+                if (Regex.IsMatch(key, @"^rl_on\d+_pin$")) score += 6;
+                if (Regex.IsMatch(key, @"^rl_off\d+_pin$")) score += 6;
+                if (Regex.IsMatch(key, @"^bt\d+_pin$")) score += 6;
+                if (Regex.IsMatch(key, @"^netled\d+_pin$")) score += 6;
+                if (string.Equals(key, "total_bt_pin", StringComparison.Ordinal)) score += 6;
+            }
+
+            return score;
+        }
+
+        static Dictionary<string, string> CleanOemAppConfigParms(Dictionary<string, string> parsed)
+        {
+            var result = new Dictionary<string, string>(StringComparer.Ordinal);
+            if (parsed == null)
+                return result;
+
+            foreach (var kv in parsed)
+            {
+                string key = NormalizeOemConfigKey(kv.Key);
+                if (string.IsNullOrWhiteSpace(key))
+                    continue;
+
+                // crc is useful as a detection signal, but it is not an OBK mapping field.
+                if (string.Equals(key, "crc", StringComparison.Ordinal))
+                    continue;
+
+                string value = (kv.Value ?? "").Trim().Trim('"');
+                if (!result.ContainsKey(key))
+                    result[key] = value;
+            }
+
+            return result;
+        }
+
+        static string NormalizeOemConfigKey(string key)
+        {
+            if (string.IsNullOrWhiteSpace(key))
+                return "";
+
+            key = key.Trim().Trim('"');
+
+            int start = 0;
+            while (start < key.Length && !char.IsLetterOrDigit(key[start]) && key[start] != '_')
+                start++;
+
+            if (start > 0 && start < key.Length)
+                key = key.Substring(start);
+
+            if (key.StartsWith("_", StringComparison.Ordinal) && key.Length > 1)
+            {
+                string withoutLeading = key.Substring(1);
+                if (withoutLeading == "chip_type" || withoutLeading == "ch_num" || withoutLeading.EndsWith("_pin", StringComparison.Ordinal))
+                    key = withoutLeading;
+            }
+
+            return key.Trim();
+        }
+
         Dictionary<string, string> GetEnhancedParmsCached()
         {
             var src = vaultDecryptedRaw;
@@ -2216,6 +2769,36 @@ List<KvEntry> GetVaultEntriesDedupedCached()
                 }
 
                 return "";
+            }
+
+            // If KV/PSM extraction is valid but contains no IO mapping, append any validated
+            // OEM app-region config under a clearly separate object. This does not replace or
+            // modify the decoded KV entries shown above.
+            try
+            {
+                bool kvHasIo = HasIoPinMapping(GetEnhancedParmsCached()) || HasIoPinMapping(parms);
+                if (!kvHasIo)
+                {
+                    var oemFallback = GetOemAppConfigParmsCached();
+                    if (HasIoPinMapping(oemFallback))
+                    {
+                        const string OemOffsetKey = "_oem_app_cfg_offset";
+                        const string OemConfigKey = "_oem_app_cfg";
+
+                        if (!valuesByKey.ContainsKey(OemOffsetKey))
+                            orderedKeys.Add(OemOffsetKey);
+                        valuesByKey[OemOffsetKey] = ToJsonElement(JsonSerializer.Serialize("0x" + _cachedOemAppConfigOffset.ToString("X")));
+
+                        if (!valuesByKey.ContainsKey(OemConfigKey))
+                            orderedKeys.Add(OemConfigKey);
+                        valuesByKey[OemConfigKey] = ToJsonElement(JsonSerializer.Serialize(oemFallback, new JsonSerializerOptions { WriteIndented = true }));
+                        hasAny = true;
+                    }
+                }
+            }
+            catch
+            {
+                // Best-effort only.
             }
 
             // Credential safety net (preserve prior behavior) without breaking single-JSON:
