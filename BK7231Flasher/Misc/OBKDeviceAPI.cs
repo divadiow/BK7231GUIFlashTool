@@ -84,16 +84,48 @@ namespace BK7231Flasher
         {
             this.adr = na;
         }
-        internal void sendGetFlashChunk_TuyaCFGFromOBKDevice(ProcessBytesReply cb, ProcessProgress cb_progress)
+        internal bool tryGetTuyaConfigDownloadRange(out int ofs, out int size)
         {
             var bkType = this.getBKType();
-            this.sendGetFlashChunk(cb, cb_progress, TuyaConfig.getMagicOffset(bkType), TuyaConfig.getMagicSize(bkType));
+            return TuyaConfig.tryGetMagicRange(bkType, out ofs, out size);
+        }
+        internal void sendGetFlashChunk_TuyaCFGFromOBKDevice(ProcessBytesReply cb, ProcessProgress cb_progress)
+        {
+            if (tryGetTuyaConfigDownloadRange(out var ofs, out var size) == false)
+            {
+                cb?.Invoke(null, 0);
+                return;
+            }
+            this.sendGetFlashChunk(cb, cb_progress, ofs, size);
+        }
+        internal bool tryGetOBKConfigDownloadRange(out int ofs, out int size)
+        {
+            ofs = 0;
+            size = 0;
+            var bkType = this.getBKType();
+            if (bkType == BKType.Invalid)
+            {
+                return false;
+            }
+            int sectors;
+            ofs = OBKFlashLayout.getConfigLocation(bkType, out sectors);
+            if (ofs <= 0 || sectors <= 0)
+            {
+                ofs = 0;
+                size = 0;
+                return false;
+            }
+            size = sectors * BK7231Flasher.SECTOR_SIZE;
+            return true;
         }
         internal void sendGetFlashChunk_OBKConfig(ProcessBytesReply cb, ProcessProgress cb_progress)
         {
-            var bkType = this.getBKType();
-            int ofs = OBKFlashLayout.getConfigLocation(bkType, out var sectors);
-            this.sendGetFlashChunk(cb, cb_progress, ofs, sectors * BK7231Flasher.SECTOR_SIZE);
+            if (tryGetOBKConfigDownloadRange(out var ofs, out var size) == false)
+            {
+                cb?.Invoke(null, 0);
+                return;
+            }
+            this.sendGetFlashChunk(cb, cb_progress, ofs, size);
         }
 
 
@@ -158,22 +190,36 @@ namespace BK7231Flasher
                     return BKType.BK7231U;
                 case "BK7231N":
                     return BKType.BK7231N;
-                case "BK7236":
-                    return BKType.BK7236;
                 case "BK7238":
                     return BKType.BK7238;
                 case "BK7252":
                     return BKType.BK7252;
                 case "BK7252N":
                     return BKType.BK7252N;
-                case "BK7258":
-                    return BKType.BK7258;
                 case "RTL8720D":
                     return BKType.RTL8720D;
+                case "RTL87X0C":
+                    return BKType.RTL87X0C;
+                case "RTL8710B":
+                    return BKType.RTL8710B;
                 case "LN882H":
                     return BKType.LN882H;
+                case "LN8825":
+                    return BKType.LN8825;
                 case "BL602":
                     return BKType.BL602;
+                case "ECR6600":
+                    return BKType.ECR6600;
+                case "RDA5981":
+                    return BKType.RDA5981;
+                case "W800":
+                    return BKType.W800;
+                case "W600":
+                    return BKType.W600;
+                case "TR6260":
+                    return BKType.TR6260;
+                case "GD32VW553":
+                    return BKType.GD32VW553;
                 default:
                     return BKType.Invalid;
             }

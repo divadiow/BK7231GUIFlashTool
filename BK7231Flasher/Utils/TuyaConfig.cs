@@ -872,6 +872,37 @@ List<KvEntry> GetVaultEntriesDedupedCached()
             _               => 0x200000 - USUAL_BK7231_MAGIC_POSITION,
         };
 
+        internal static bool tryGetMagicRange(BKType type, out int offset, out int size)
+        {
+            switch (type)
+            {
+                case BKType.BK7231M:
+                case BKType.BK7231N:
+                case BKType.BK7231T:
+                case BKType.BK7231U:
+                case BKType.BK7238:
+                case BKType.BK7252:
+                case BKType.BK7252N:
+                case BKType.RTL8710B:
+                case BKType.RTL87X0C:
+                case BKType.RTL8720D:
+                case BKType.LN882H:
+                case BKType.LN8825:
+                case BKType.ECR6600:
+                case BKType.TR6260:
+                case BKType.XR809:
+                case BKType.XR806:
+                case BKType.RDA5981:
+                    offset = getMagicOffset(type);
+                    size = getMagicSize(type);
+                    return offset >= 0 && size > 0;
+                default:
+                    offset = 0;
+                    size = 0;
+                    return false;
+            }
+        }
+
         public string getMagicPositionHex() => $"0x{magicPosition:X}";
 
         public string getMagicPositionDecAndHex() => $"{magicPosition} ({getMagicPositionHex()})";

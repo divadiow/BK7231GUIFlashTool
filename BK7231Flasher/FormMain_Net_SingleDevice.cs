@@ -48,24 +48,39 @@ namespace BK7231Flasher
                 MessageBox.Show("Please enter valid IP string");
             }
         }
-        bool checkIsIPOBKDeviceAndShowError()
+        string getUnsupportedIPOperationMessage()
         {
-            BKType type = dev.getBKType();
-            if (type == BKType.Invalid)
+            string chip = dev.getChipSet();
+            if (string.IsNullOrEmpty(chip))
             {
-                MessageBox.Show("This is implemented only for BK7231N and BK7231T");
+                return "This OpenBeken platform is not supported for this IP operation yet.";
+            }
+            return "This OpenBeken platform is not supported for this IP operation yet: " + chip;
+        }
+        bool checkIsIPOBKConfigReadSupportedAndShowError()
+        {
+            if (dev.tryGetOBKConfigDownloadRange(out _, out _) == false)
+            {
+                MessageBox.Show(getUnsupportedIPOperationMessage());
+                return false;
+            }
+            return true;
+        }
+        bool checkIsIPTuyaConfigReadSupportedAndShowError()
+        {
+            if (dev.tryGetTuyaConfigDownloadRange(out _, out _) == false)
+            {
+                MessageBox.Show(getUnsupportedIPOperationMessage());
                 return false;
             }
             return true;
         }
         void doSingleDeviceOBKCFGDump()
         {
-            // is this BK7231?
-            if (checkIsIPOBKDeviceAndShowError() == false)
+            if (checkIsIPOBKConfigReadSupportedAndShowError() == false)
             {
                 return;
             }
-            // this is BK7231!
             setupDownloadOperationProgressBar("Downloading OBK CFG dump...");
             dev.sendGetFlashChunk_OBKConfig(onOBKConfigDownloaded, onOBKConfigProgress);
         }
@@ -160,12 +175,10 @@ namespace BK7231Flasher
 
         void doSingleDeviceTuyaCFGDump()
         {
-            // is this BK7231?
-            if (checkIsIPOBKDeviceAndShowError() == false)
+            if (checkIsIPTuyaConfigReadSupportedAndShowError() == false)
             {
                 return;
             }
-            // this is BK7231!
             setupDownloadOperationProgressBar("Downloading Tuya CFG dump from OBK device...");
             dev.sendGetFlashChunk_TuyaCFGFromOBKDevice(onTuyaConfigDownloaded, onTuyaConfigProgress);
         }
