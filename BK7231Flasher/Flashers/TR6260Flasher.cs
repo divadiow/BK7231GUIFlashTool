@@ -398,10 +398,11 @@ namespace BK7231Flasher
 
             if(needUbootProtocol)
             {
+                FlushPort();
                 SetBusyState("Verifying protocol...");
                 if(!VerifyUbootProtocol())
                 {
-                    addErrorLine("Download/read protocol sync failed after baud change");
+                    addErrorLine("Download/read protocol sync failed after baud setup");
                     SetErrorState("Protocol sync failed");
                     return false;
                 }
