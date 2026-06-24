@@ -311,7 +311,11 @@ namespace BK7231Flasher
                     {
                         syncResp = SyncOnce();
                         if(syncResp == TRS_ROM_SYNC_ACK || syncResp == TRS_UBOOT_SYNC_ACK)
+                        {
+                            if(syncResp == TRS_UBOOT_SYNC_ACK)
+                                alreadyAtRequestedUbootBaud = true;
                             break;
+                        }
 
                         if(sessionPortUnavailable || cancellationToken.IsCancellationRequested)
                             break;
@@ -319,9 +323,6 @@ namespace BK7231Flasher
                         Thread.Sleep(500);
                     }
                     // If fallback also failed, restore default baud for consistent error state
-                    if(syncResp == TRS_UBOOT_SYNC_ACK)
-                        alreadyAtRequestedUbootBaud = true;
-
                     if(syncResp != TRS_ROM_SYNC_ACK && syncResp != TRS_UBOOT_SYNC_ACK)
                         serial.BaudRate = DEFAULT_BAUD;
                 }
@@ -373,6 +374,17 @@ namespace BK7231Flasher
             {
                 SetBusyState("Verifying protocol...");
                 byte verify = SyncOnce();
+                if(verify != TRS_UBOOT_SYNC_ACK && serial != null && serial.BaudRate != DEFAULT_BAUD)
+                {
+                    int failedBaud = serial.BaudRate;
+                    addWarningLine($"Protocol sync failed at {failedBaud}; retrying at {DEFAULT_BAUD}...");
+                    serial.BaudRate = DEFAULT_BAUD;
+                    FlushPort();
+                    verify = SyncOnce();
+                    if(verify == TRS_UBOOT_SYNC_ACK)
+                        addWarningLine($"Continuing at {DEFAULT_BAUD}; target did not stay at requested baud {failedBaud}.");
+                }
+
                 if(verify != TRS_UBOOT_SYNC_ACK)
                 {
                     addErrorLine("Download/read protocol sync failed after baud change");
@@ -448,12 +460,17 @@ namespace BK7231Flasher
 
             Thread.Sleep(50);
             byte? ack = ReadResponseByte(1, 0);
-            if(ack != TRS_ROM_BAUD_ACK)
+            if(ack == TRS_ROM_BAUD_ACK)
+                return true;
+            if(ack == TRS_ROM_FILE_ACK)
             {
-                addErrorLine($"Set baud failed, response {(ack.HasValue ? ack.Value.ToString() : "<timeout>")}");
-                SetErrorState("Baud change failed");
-                return false;
+                addLogLine("Set baud acknowledged with ACK_OK (0); verifying protocol...");
+                return true;
             }
+            if(ack.HasValue)
+                addWarningLine($"Set baud returned response {ack.Value}; verifying protocol before failing...");
+            else
+                addWarningLine("Set baud response timed out; verifying protocol before failing...");
 
             return true;
         }
