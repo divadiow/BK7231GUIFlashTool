@@ -42,6 +42,7 @@ namespace BK7231Flasher
         MemoryStream ms;
         bool sessionPortUnavailable;
         bool sessionClosedPortWriteLogged;
+        bool sessionUnknownStateWarningLogged;
 
         sealed class TransferSegment
         {
@@ -79,6 +80,7 @@ namespace BK7231Flasher
         {
             sessionPortUnavailable = false;
             sessionClosedPortWriteLogged = false;
+            sessionUnknownStateWarningLogged = false;
         }
 
         int GetRequestedBaud(int? requestedBaudOverride = null)
@@ -120,6 +122,24 @@ namespace BK7231Flasher
 
             addErrorLine("Serial write failed: The port is closed.");
             sessionClosedPortWriteLogged = true;
+        }
+
+        void LogUnknownStateAfterInterruptedSession()
+        {
+            if(sessionUnknownStateWarningLogged)
+                return;
+
+            if(!sessionPortUnavailable && !cancellationToken.IsCancellationRequested)
+                return;
+
+            addWarningLine("TR6260 operation was interrupted. Target protocol state is unknown; power-cycle/reset the device before starting another TR6260 operation.");
+            sessionUnknownStateWarningLogged = true;
+        }
+
+        void FinishSession()
+        {
+            LogUnknownStateAfterInterruptedSession();
+            closePort();
         }
 
         bool PrepareReadOrWriteSession()
@@ -285,90 +305,8 @@ namespace BK7231Flasher
             if(IsSupportedBaud(requested))
                 return true;
 
-            addErrorLine($"Baud {requested} is not supported by the TR6260 official baud table. Supported values: {SUPPORTED_BAUDS_TEXT}");
+            addErrorLine($"Baud {requested} is not supported by the official TR6260 ROM/uboot baud table. Supported values: {SUPPORTED_BAUDS_TEXT}");
             SetErrorState("Unsupported baud");
-            return false;
-        }
-
-        IEnumerable<int> BuildUbootProbeBauds(int requestedBaud, int configuredBaud)
-        {
-            var bauds = new List<int>();
-            Action<int> add = b =>
-            {
-                if(b > 0 && b != DEFAULT_BAUD && IsSupportedBaud(b) && !bauds.Contains(b))
-                    bauds.Add(b);
-            };
-
-            add(requestedBaud);
-            add(configuredBaud);
-            foreach(int baud in SUPPORTED_BAUDS)
-                add(baud);
-
-            return bauds;
-        }
-
-        bool TryProbeExistingUboot(int requestedBaud, out int detectedBaud)
-        {
-            detectedBaud = 0;
-            addLogLine("No bootrom response at 57600; probing for existing uboot at known TR6260 bauds...");
-
-            int oldTimeout = serial?.ReadTimeout ?? 2000;
-            try
-            {
-                if(serial != null)
-                    serial.ReadTimeout = 250;
-
-                foreach(int probeBaud in BuildUbootProbeBauds(requestedBaud, GetRequestedBaud(null)))
-                {
-                    if(sessionPortUnavailable || cancellationToken.IsCancellationRequested)
-                        break;
-
-                    try
-                    {
-                        if(serial.BaudRate != probeBaud)
-                            serial.BaudRate = probeBaud;
-                    }
-                    catch(Exception ex)
-                    {
-                        addWarningLine($"Could not switch to {probeBaud} for uboot probe: {ex.Message}");
-                        continue;
-                    }
-
-                    FlushPort();
-                    Thread.Sleep(50);
-                    byte resp = SyncOnce();
-                    if(resp == TRS_UBOOT_SYNC_ACK)
-                    {
-                        detectedBaud = probeBaud;
-                        addLogLine($"Found existing uboot at {probeBaud} baud.");
-                        return true;
-                    }
-
-                    if(resp != 0)
-                        addLogLine($"Uboot probe at {probeBaud} returned response {resp}.");
-                }
-            }
-            finally
-            {
-                try
-                {
-                    if(serial != null)
-                        serial.ReadTimeout = oldTimeout;
-                }
-                catch
-                {
-                }
-            }
-
-            try
-            {
-                if(serial != null)
-                    serial.BaudRate = DEFAULT_BAUD;
-            }
-            catch
-            {
-            }
-
             return false;
         }
 
@@ -377,15 +315,12 @@ namespace BK7231Flasher
             if(!ValidateRequestedBaud(requestedBaudOverride))
                 return false;
 
-            int requestedBaud = GetRequestedBaud(requestedBaudOverride);
-            int currentUbootBaud = DEFAULT_BAUD;
-
             SetBusyState("Opening port...");
             if(!SetupPort())
                 return false;
 
-            SetBusyState("Syncing bootrom/uboot...");
-            addLogLine("Syncing bootrom/uboot at 57600...");
+            SetBusyState("Syncing bootrom...");
+            addLogLine("Syncing bootrom...");
             byte syncResp = 0;
             for(int loop = 1; loop <= 10; loop++)
             {
@@ -399,22 +334,36 @@ namespace BK7231Flasher
                 Thread.Sleep(1000);
             }
 
-            // A previous Easy Flasher operation may have left the RAM uboot alive at
-            // the negotiated baud. A sync probe is non-disruptive; do not send baud
-            // configuration or upload uboot until we know what state the target is in.
+            // If sync failed at DEFAULT_BAUD, a previous session may have left the device in uboot
+            // at a higher negotiated baud. Try the user's configured baud before giving up.
             if(syncResp != TRS_ROM_SYNC_ACK && syncResp != TRS_UBOOT_SYNC_ACK)
             {
-                int detectedBaud;
-                if(TryProbeExistingUboot(requestedBaud, out detectedBaud))
+                int fallbackBaud = GetRequestedBaud(requestedBaudOverride);
+                if(serial != null && fallbackBaud != serial.BaudRate)
                 {
-                    syncResp = TRS_UBOOT_SYNC_ACK;
-                    currentUbootBaud = detectedBaud;
+                    addLogLine($"Sync failed at {serial.BaudRate}, retrying at {fallbackBaud}...");
+                    serial.BaudRate = fallbackBaud;
+                    for(int loop = 1; loop <= 5; loop++)
+                    {
+                        syncResp = SyncOnce();
+                        if(syncResp == TRS_ROM_SYNC_ACK || syncResp == TRS_UBOOT_SYNC_ACK)
+                            break;
+
+                        if(sessionPortUnavailable || cancellationToken.IsCancellationRequested)
+                            break;
+
+                        Thread.Sleep(500);
+                    }
+                    // If fallback also failed, restore default baud for consistent error state
+                    if(syncResp != TRS_ROM_SYNC_ACK && syncResp != TRS_UBOOT_SYNC_ACK)
+                        serial.BaudRate = DEFAULT_BAUD;
                 }
             }
 
             if(syncResp != TRS_ROM_SYNC_ACK && syncResp != TRS_UBOOT_SYNC_ACK)
             {
                 addErrorLine("Sync failed");
+                addWarningLine("If a previous TR6260 operation was cancelled or interrupted, power-cycle/reset the device before starting another operation.");
                 SetErrorState("Sync failed");
                 return false;
             }
@@ -422,7 +371,6 @@ namespace BK7231Flasher
             if(syncResp == TRS_ROM_SYNC_ACK)
             {
                 addLogLine("Sync OK (UART/bootrom mode)");
-                currentUbootBaud = DEFAULT_BAUD;
                 if(needUbootProtocol)
                 {
                     if(!LoadBootloaderToRam())
@@ -438,14 +386,13 @@ namespace BK7231Flasher
             }
             else
             {
-                currentUbootBaud = serial?.BaudRate ?? currentUbootBaud;
-                addLogLine($"Sync OK (uboot/flash mode at {currentUbootBaud} baud)");
+                addLogLine("Sync OK (uboot/flash mode)");
             }
 
             if(needUbootProtocol)
             {
                 SetBusyState("Changing baud...");
-                if(!ConfigureBaudrateIfNeeded(currentUbootBaud, requestedBaudOverride))
+                if(!ConfigureBaudrateIfNeeded(requestedBaudOverride))
                     return false;
             }
 
@@ -463,21 +410,14 @@ namespace BK7231Flasher
             return true;
         }
 
-        bool ConfigureBaudrateIfNeeded(int currentUbootBaud, int? requestedBaudOverride = null)
+        bool ConfigureBaudrateIfNeeded(int? requestedBaudOverride = null)
         {
             int requested = GetRequestedBaud(requestedBaudOverride);
-            if(currentUbootBaud == requested)
-            {
-                addLogLine($"Uboot already at requested baud {requested}; skipping baud change.");
-                return true;
-            }
-
             byte baudCode;
             switch(requested)
             {
                 case 57600:
-                    baudCode = 2;
-                    break;
+                    return true;
                 case 115200:
                     baudCode = 1;
                     break;
@@ -512,12 +452,11 @@ namespace BK7231Flasher
                     baudCode = 13;
                     break;
                 default:
-                    addErrorLine($"Baud {requested} is not supported by the TR6260 official baud table. Supported values: {SUPPORTED_BAUDS_TEXT}");
+                    addErrorLine($"Baud {requested} is not supported by the official TR6260 ROM/uboot baud table. Supported values: {SUPPORTED_BAUDS_TEXT}");
                     SetErrorState("Unsupported baud");
                     return false;
             }
 
-            addLogLine($"Changing TR6260 uboot baud from {currentUbootBaud} to {requested} using code {baudCode}...");
             if(!WriteRaw(new[] { baudCode }))
                 return false;
 
@@ -973,7 +912,7 @@ namespace BK7231Flasher
             }
             finally
             {
-                closePort();
+                FinishSession();
             }
         }
 
@@ -996,7 +935,7 @@ namespace BK7231Flasher
             }
             finally
             {
-                closePort();
+                FinishSession();
             }
         }
 
@@ -1019,7 +958,7 @@ namespace BK7231Flasher
             }
             finally
             {
-                closePort();
+                FinishSession();
             }
         }
 
@@ -1097,7 +1036,7 @@ namespace BK7231Flasher
                 }
                 finally
                 {
-                    closePort();
+                    FinishSession();
                 }
                 return;
             }
@@ -1184,7 +1123,7 @@ namespace BK7231Flasher
                 }
                 finally
                 {
-                    closePort();
+                    FinishSession();
                 }
             }
         }
