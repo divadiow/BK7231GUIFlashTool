@@ -21,8 +21,8 @@ namespace BK7231Flasher
         const int RAM_ADDR = 0x10000;
         const uint TRS_SYNC = 0x73796E63;
 
-        static readonly int[] SUPPORTED_BAUDS = { 57600, 115200, 460800, 576000, 691200, 806400, 921600, 2000000 };
-        const string SUPPORTED_BAUDS_TEXT = "57600, 115200, 460800, 576000, 691200, 806400, 921600, 2000000";
+        static readonly int[] SUPPORTED_BAUDS = { 57600, 115200, 380400, 460800, 576000, 691200, 806400, 921600, 1400000, 1660000, 1840000, 2000000 };
+        const string SUPPORTED_BAUDS_TEXT = "57600, 115200, 380400, 460800, 576000, 691200, 806400, 921600, 1400000, 1660000, 1840000, 2000000";
 
         const byte TRS_ROM_SYNC_ACK = 1;
         const byte TRS_UBOOT_SYNC_ACK = 2;
@@ -284,6 +284,7 @@ namespace BK7231Flasher
             SetBusyState("Syncing bootrom...");
             addLogLine("Syncing bootrom...");
             byte syncResp = 0;
+            bool alreadyAtRequestedUbootBaud = false;
             for(int loop = 1; loop <= 10; loop++)
             {
                 syncResp = SyncOnce();
@@ -305,6 +306,7 @@ namespace BK7231Flasher
                 {
                     addLogLine($"Sync failed at {serial.BaudRate}, retrying at {fallbackBaud}...");
                     serial.BaudRate = fallbackBaud;
+                    FlushPort();
                     for(int loop = 1; loop <= 5; loop++)
                     {
                         syncResp = SyncOnce();
@@ -317,6 +319,9 @@ namespace BK7231Flasher
                         Thread.Sleep(500);
                     }
                     // If fallback also failed, restore default baud for consistent error state
+                    if(syncResp == TRS_UBOOT_SYNC_ACK)
+                        alreadyAtRequestedUbootBaud = true;
+
                     if(syncResp != TRS_ROM_SYNC_ACK && syncResp != TRS_UBOOT_SYNC_ACK)
                         serial.BaudRate = DEFAULT_BAUD;
                 }
@@ -352,9 +357,16 @@ namespace BK7231Flasher
 
             if(needUbootProtocol)
             {
-                SetBusyState("Changing baud...");
-                if(!ConfigureBaudrateIfNeeded(requestedBaudOverride))
-                    return false;
+                if(alreadyAtRequestedUbootBaud)
+                {
+                    addLogLine($"Uboot already responding at {serial.BaudRate}, keeping current baud.");
+                }
+                else
+                {
+                    SetBusyState("Changing baud...");
+                    if(!ConfigureBaudrateIfNeeded(requestedBaudOverride))
+                        return false;
+                }
             }
 
             if(needUbootProtocol)
@@ -379,9 +391,13 @@ namespace BK7231Flasher
             switch(requested)
             {
                 case 57600:
-                    return true;
+                    baudCode = 2;
+                    break;
                 case 115200:
                     baudCode = 1;
+                    break;
+                case 380400:
+                    baudCode = 4;
                     break;
                 case 460800:
                     baudCode = 5;
