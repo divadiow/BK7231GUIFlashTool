@@ -727,6 +727,39 @@ namespace BK7231Flasher
             return data.Length >= (DEFAULT_FLASH_SIZE - APP_ADDR);
         }
 
+        int ClampFlashReadLength(int offset, int requestedLength, string operation)
+        {
+            if(requestedLength <= 0)
+            {
+                addErrorLine($"TR6260 {operation} length 0x{requestedLength:X} is not valid.");
+                SetErrorState("Read error");
+                return 0;
+            }
+
+            if(offset < 0)
+            {
+                addErrorLine($"TR6260 {operation} offset 0x{offset:X} is not valid.");
+                SetErrorState("Read error");
+                return 0;
+            }
+
+            int maxLength = DEFAULT_FLASH_SIZE - offset;
+            if(maxLength <= 0)
+            {
+                addErrorLine($"TR6260 {operation} offset 0x{offset:X} is outside the 0x{DEFAULT_FLASH_SIZE:X} flash range.");
+                SetErrorState("Read error");
+                return 0;
+            }
+
+            if(requestedLength > maxLength)
+            {
+                addWarningLine($"TR6260 {operation} length 0x{requestedLength:X} at 0x{offset:X} exceeds the 0x{DEFAULT_FLASH_SIZE:X} flash range; limiting to 0x{maxLength:X}.");
+                return maxLength;
+            }
+
+            return requestedLength;
+        }
+
         bool WriteFirmwarePayload(int startOffset, byte[] data)
         {
             int address = startOffset;
@@ -926,6 +959,12 @@ namespace BK7231Flasher
                 offset = 0;
                 length = DEFAULT_FLASH_SIZE;
             }
+            else
+            {
+                length = ClampFlashReadLength(offset, length, "read");
+                if(length <= 0)
+                    return;
+            }
 
             try
             {
@@ -1005,7 +1044,11 @@ namespace BK7231Flasher
                     if(!PrepareReadOrWriteSession())
                         return;
 
-                    ReadFlashViaUboot(startSector, sectors * BK7231Flasher.SECTOR_SIZE);
+                    int backupLength = ClampFlashReadLength(startSector, sectors * BK7231Flasher.SECTOR_SIZE, "backup");
+                    if(backupLength <= 0)
+                        return;
+
+                    ReadFlashViaUboot(startSector, backupLength);
 
                     if(ms == null)
                         return;
