@@ -21,8 +21,8 @@ namespace BK7231Flasher
         const int RAM_ADDR = 0x10000;
         const uint TRS_SYNC = 0x73796E63;
 
-        static readonly int[] SUPPORTED_BAUDS = { 57600, 115200, 380400, 460800, 576000, 691200, 806400, 921600, 1400000, 1660000, 1840000, 2000000 };
-        const string SUPPORTED_BAUDS_TEXT = "57600, 115200, 380400, 460800, 576000, 691200, 806400, 921600, 1400000, 1660000, 1840000, 2000000";
+        static readonly int[] SUPPORTED_BAUDS = { 57600, 115200, 460800, 576000, 691200, 806400, 921600, 2000000 };
+        const string SUPPORTED_BAUDS_TEXT = "57600, 115200, 460800, 576000, 691200, 806400, 921600, 2000000";
 
         const byte TRS_ROM_SYNC_ACK = 1;
         const byte TRS_UBOOT_SYNC_ACK = 2;
@@ -129,7 +129,7 @@ namespace BK7231Flasher
 
         bool PrepareEraseSession()
         {
-            return PrepareSession(true);
+            return PrepareSession(true, ERASE_OPERATION_BAUD);
         }
 
         bool SetupPort(int initialBaud = DEFAULT_BAUD)
@@ -256,6 +256,24 @@ namespace BK7231Flasher
             return false;
         }
 
+        bool VerifyUbootProtocol(int attempts = 5)
+        {
+            for(int loop = 1; loop <= attempts; loop++)
+            {
+                byte resp = SyncOnce();
+                if(resp == TRS_UBOOT_SYNC_ACK)
+                    return true;
+
+                if(sessionPortUnavailable || cancellationToken.IsCancellationRequested)
+                    break;
+
+                if(loop < attempts)
+                    addLogLine($"Protocol sync response {resp}, retry {loop}/{attempts}");
+                Thread.Sleep(150);
+            }
+            return false;
+        }
+
         bool IsSupportedBaud(int requested)
         {
             return SUPPORTED_BAUDS.Contains(requested);
@@ -284,7 +302,6 @@ namespace BK7231Flasher
             SetBusyState("Syncing bootrom...");
             addLogLine("Syncing bootrom...");
             byte syncResp = 0;
-            bool alreadyAtRequestedUbootBaud = false;
             for(int loop = 1; loop <= 10; loop++)
             {
                 syncResp = SyncOnce();
@@ -306,16 +323,11 @@ namespace BK7231Flasher
                 {
                     addLogLine($"Sync failed at {serial.BaudRate}, retrying at {fallbackBaud}...");
                     serial.BaudRate = fallbackBaud;
-                    FlushPort();
                     for(int loop = 1; loop <= 5; loop++)
                     {
                         syncResp = SyncOnce();
                         if(syncResp == TRS_ROM_SYNC_ACK || syncResp == TRS_UBOOT_SYNC_ACK)
-                        {
-                            if(syncResp == TRS_UBOOT_SYNC_ACK)
-                                alreadyAtRequestedUbootBaud = true;
                             break;
-                        }
 
                         if(sessionPortUnavailable || cancellationToken.IsCancellationRequested)
                             break;
@@ -358,34 +370,15 @@ namespace BK7231Flasher
 
             if(needUbootProtocol)
             {
-                if(alreadyAtRequestedUbootBaud)
-                {
-                    addLogLine($"Uboot already responding at {serial.BaudRate}, keeping current baud.");
-                }
-                else
-                {
-                    SetBusyState("Changing baud...");
-                    if(!ConfigureBaudrateIfNeeded(requestedBaudOverride))
-                        return false;
-                }
+                SetBusyState("Changing baud...");
+                if(!ConfigureBaudrateIfNeeded(requestedBaudOverride))
+                    return false;
             }
 
             if(needUbootProtocol)
             {
                 SetBusyState("Verifying protocol...");
-                byte verify = SyncOnce();
-                if(verify != TRS_UBOOT_SYNC_ACK && serial != null && serial.BaudRate != DEFAULT_BAUD)
-                {
-                    int failedBaud = serial.BaudRate;
-                    addWarningLine($"Protocol sync failed at {failedBaud}; retrying at {DEFAULT_BAUD}...");
-                    serial.BaudRate = DEFAULT_BAUD;
-                    FlushPort();
-                    verify = SyncOnce();
-                    if(verify == TRS_UBOOT_SYNC_ACK)
-                        addWarningLine($"Continuing at {DEFAULT_BAUD}; target did not stay at requested baud {failedBaud}.");
-                }
-
-                if(verify != TRS_UBOOT_SYNC_ACK)
+                if(!VerifyUbootProtocol())
                 {
                     addErrorLine("Download/read protocol sync failed after baud change");
                     SetErrorState("Protocol sync failed");
@@ -403,13 +396,9 @@ namespace BK7231Flasher
             switch(requested)
             {
                 case 57600:
-                    baudCode = 2;
-                    break;
+                    return true;
                 case 115200:
                     baudCode = 1;
-                    break;
-                case 380400:
-                    baudCode = 4;
                     break;
                 case 460800:
                     baudCode = 5;
@@ -462,16 +451,9 @@ namespace BK7231Flasher
             byte? ack = ReadResponseByte(1, 0);
             if(ack == TRS_ROM_BAUD_ACK)
                 return true;
-            if(ack == TRS_ROM_FILE_ACK)
-            {
-                addLogLine("Set baud acknowledged with ACK_OK (0); verifying protocol...");
-                return true;
-            }
-            if(ack.HasValue)
-                addWarningLine($"Set baud returned response {ack.Value}; verifying protocol before failing...");
-            else
-                addWarningLine("Set baud response timed out; verifying protocol before failing...");
 
+            string responseText = ack.HasValue ? ack.Value.ToString() : "<timeout>";
+            addWarningLine($"Set baud returned response {responseText}; verifying protocol before failing...");
             return true;
         }
 
