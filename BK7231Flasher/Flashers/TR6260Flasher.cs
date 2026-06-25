@@ -21,8 +21,8 @@ namespace BK7231Flasher
         const int RAM_ADDR = 0x10000;
         const uint TRS_SYNC = 0x73796E63;
 
-        static readonly int[] SUPPORTED_BAUDS = { 57600, 115200, 380400, 460800, 576000, 691200, 806400, 921600, 1400000, 1660000, 1840000, 2000000 };
-        const string SUPPORTED_BAUDS_TEXT = "57600, 115200, 380400, 460800, 576000, 691200, 806400, 921600, 1400000, 1660000, 1840000, 2000000";
+        static readonly int[] SUPPORTED_BAUDS = { 57600, 115200, 460800, 576000, 691200, 806400, 921600, 1400000, 1660000, 1840000, 2000000 };
+        const string SUPPORTED_BAUDS_TEXT = "57600, 115200, 460800, 576000, 691200, 806400, 921600, 1400000, 1660000, 1840000, 2000000";
 
         const byte TRS_ROM_SYNC_ACK = 1;
         const byte TRS_UBOOT_SYNC_ACK = 2;
@@ -162,8 +162,8 @@ namespace BK7231Flasher
                 {
                     ReadTimeout = 2000,
                     WriteTimeout = 2000,
-                    DtrEnable = false,
-                    RtsEnable = false
+                    DtrEnable = true,
+                    RtsEnable = true
                 };
                 serial.Open();
                 FlushPort();
@@ -248,6 +248,36 @@ namespace BK7231Flasher
 
                 addErrorLine("Serial write failed: " + ex.Message);
                 return false;
+            }
+        }
+
+        bool WaitForTransmitDrain(int timeoutMs = 100)
+        {
+            try
+            {
+                try
+                {
+                    serial?.BaseStream?.Flush();
+                }
+                catch
+                {
+                }
+
+                DateTime deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+                while(serial != null && serial.IsOpen && serial.BytesToWrite > 0 && DateTime.UtcNow < deadline)
+                    Thread.Sleep(1);
+
+                return serial != null && serial.IsOpen;
+            }
+            catch(Exception ex)
+            {
+                if(IsPortUnavailableException(ex) || IsPortUnavailable())
+                {
+                    MarkPortUnavailable();
+                    return false;
+                }
+
+                return true;
             }
         }
 
@@ -398,7 +428,6 @@ namespace BK7231Flasher
 
             if(needUbootProtocol)
             {
-                FlushPort();
                 SetBusyState("Verifying protocol...");
                 if(!VerifyUbootProtocol())
                 {
@@ -421,9 +450,6 @@ namespace BK7231Flasher
                     return true;
                 case 115200:
                     baudCode = 1;
-                    break;
-                case 380400:
-                    baudCode = 4;
                     break;
                 case 460800:
                     baudCode = 5;
@@ -459,6 +485,8 @@ namespace BK7231Flasher
             }
 
             if(!WriteRaw(new[] { baudCode }))
+                return false;
+            if(!WaitForTransmitDrain())
                 return false;
 
             try
