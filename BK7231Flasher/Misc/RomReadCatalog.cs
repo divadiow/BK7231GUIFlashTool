@@ -189,6 +189,12 @@ namespace BK7231Flasher
         const string OplEfuseBackend = "OPL1000A2_Stub cmd 0x99";
         const string OplEfuseController = "Hal_Sys_OtpRead";
         #endregion
+        #region W800
+        const string W800RomSpace = "mask ROM memory";
+        const string W800RomBackend = "W800 RAM stub cmd 0x4A";
+        const string W800RomController = "raw mapped-memory read with CRC32";
+        static readonly int[] W800SerialBauds = new int[] { 115200, 460800 };
+        #endregion
 
         static readonly IReadOnlyList<RomReadTarget> Targets = new List<RomReadTarget>()
         {
@@ -208,6 +214,7 @@ namespace BK7231Flasher
             new RomReadTarget(BKType.BK7258, RomReadKind.Rom, "ROM", 0x16000000, 0x10000, 115200, CommonSerialBauds, BekenNonSecureRomSpace, BekenRomBackend, BekenRomController),
             new RomReadTarget(BKType.BK7258, RomReadKind.Efuse, "eFuse", 0x00000000, 0x04, 115200, CommonSerialBauds, Bk7258EfuseSpace, BekenEfuseBackend, Bk7258EfuseController),
             new RomReadTarget(BKType.BK7258, RomReadKind.Otp, "OTP", 0x00000000, Bk7258Otp1Size + Bk7258Otp2Size, 115200, CommonSerialBauds, Bk7258OtpSpace, Bk7258OtpBackend, Bk7258OtpController, outputSlices: Bk7258OtpSlices),
+            new RomReadTarget(BKType.W800, RomReadKind.Rom, "Mask ROM", 0x00000000, 0x5000, 460800, W800SerialBauds, W800RomSpace, W800RomBackend, W800RomController),
             new RomReadTarget(BKType.LN882H, RomReadKind.Rom, "ROM", 0x00000000, 0x20000, 115200, CommonSerialBauds, LnRomSpace, LnRamcodeBackend, LnRomController),
             new RomReadTarget(BKType.LN882H, RomReadKind.Otp, "Flash OTP", 0x00000000, 0x400, 115200, CommonSerialBauds, LnFlashOtpSpace, LnRamcodeBackend, LnFlashOtpController, 2, "CRC16"),
             new RomReadTarget(BKType.LN882H, RomReadKind.Efuse, "eFuse", 0x00000000, 0x40, 115200, CommonSerialBauds, LnEfuseSpace, LnRamcodeBackend, LnEfuseController, 2, "CRC16"),

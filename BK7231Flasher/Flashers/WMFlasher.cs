@@ -8,7 +8,7 @@ using System.Threading;
 
 namespace BK7231Flasher
 {
-	public class WMFlasher : BaseFlasher
+	public class WMFlasher : BaseFlasher, IRomReadFlasher
 	{
 		// it uses CRC16 CCITT 0xFFFF
 		// WM command - 0x21 {length high} {length low} {crc16 high} {crc16 low} {command 4 bytes} {payload}
@@ -416,7 +416,8 @@ namespace BK7231Flasher
 			logger.setState("Reading...", Color.Transparent);
 			for(int i = 0; i < count; i++)
 			{
-				addLog(string.Format($"Read block at 0x{offset ^ 0x08000000:X6}..."));
+				int displayOffset = offset >= 0x08000000 ? offset ^ 0x08000000 : offset;
+				addLog(string.Format($"Read block at 0x{displayOffset:X6}..."));
 				var header = new byte[8];
 				header[0] = (byte)(offset & 0xFF);
 				header[1] = (byte)((offset >> 8) & 0xFF);
@@ -524,6 +525,51 @@ namespace BK7231Flasher
 		public override byte[] getReadResult()
 		{
 			return ms?.ToArray();
+		}
+
+		public byte[] ReadRomTarget(RomReadTarget target)
+		{
+			try
+			{
+				if(target == null || target.Kind != RomReadKind.Rom || !target.Address.HasValue || !target.Length.HasValue)
+				{
+					addErrorLine("Selected W800 ROM read target is not valid.");
+					return null;
+				}
+				if(target.Address.Value < 0 || target.Length.Value <= 0 || target.Address.Value > 0x5000 - target.Length.Value)
+				{
+					addErrorLine("Selected W800 ROM read range is outside mask ROM.");
+					return null;
+				}
+				if(doGenericSetup() == false || InitialSync() == false || ReadFlashId() == null || UploadStub() == false)
+				{
+					return null;
+				}
+				if(SetBaud(baudrate) == false)
+				{
+					return null;
+				}
+				var result = new MemoryStream();
+				if(ReadFlash(result, target.Address.Value, target.Length.Value) == false)
+				{
+					return null;
+				}
+				return result.ToArray();
+			}
+			catch(Exception ex)
+			{
+				addErrorLine("ROM read failed: " + ex.Message);
+				return null;
+			}
+			finally
+			{
+				try
+				{
+					if(serial != null && serial.IsOpen) SetBaud(115200, true);
+				}
+				catch { }
+				try { closePort(); } catch { }
+			}
 		}
 
 		public override bool doErase(int startSector = 0x000, int sectors = 10, bool bAll = false)
@@ -645,7 +691,7 @@ namespace BK7231Flasher
 									addErrorLine("Unknown file type, no firmware header at 0x2000!");
 									return;
 								}
-								var cutData = new byte[data.Length - startSector - 1];
+								var cutData = new byte[data.Length - startSector];
 								Array.Copy(data, startSector, cutData, 0, cutData.Length);
 								startSector |= 0x08000000;
 								var fls = GenerateW800PseudoFLSFromData(cutData, startSector);
