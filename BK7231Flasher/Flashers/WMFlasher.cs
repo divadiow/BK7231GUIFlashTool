@@ -4,6 +4,8 @@ using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.IO.Ports;
+using System.Linq;
+using System.Security.Cryptography;
 using System.Threading;
 
 namespace BK7231Flasher
@@ -15,6 +17,18 @@ namespace BK7231Flasher
 		MemoryStream ms;
 		int flashSizeMB = 2;
 		byte[] flashID;
+		const byte CMD_STUB_SYNC = 0x00;
+		const byte CMD_STUB_FLASH_ERASE = 0x04;
+		const byte CMD_STUB_FLASH_CHIP_ERASE = 0x05;
+		const byte CMD_STUB_BAUD = 0x07;
+		const byte CMD_STUB_SHA256 = 0x09;
+		const byte CMD_STUB_FLASH_ID = 0x90;
+		const byte CMD_STUB_XMODEM_WRITE = 0x91;
+		const byte CMD_STUB_XMODEM_READ = 0x92;
+		const byte CMD_STUB_GET_MAC = 0x95;
+		const byte CMD_STUB_XMODEM_READ_COMPRESSED = 0x96;
+		const byte CMD_STUB_XMODEM_WRITE_COMPRESSED = 0x97;
+		const byte CMD_STUB_XMODEM_READ_RAW = 0x98;
 
 		public WMFlasher(CancellationToken ct) : base(ct)
 		{
@@ -248,9 +262,151 @@ namespace BK7231Flasher
 			if(xm.Send(stub) == stub.Length)
 			{
 				addLogLine($"Stub uploaded!");
-				return Sync();
+				if(!Sync())
+					return false;
+				return ExecuteStubCommand(CMD_STUB_SYNC) != null;
 			}
 			return false;
+		}
+
+		private bool InitialiseTarget()
+		{
+			if(!InitialSync())
+				return false;
+			if(chipType == BKType.W600)
+				return ReadFlashId() != null && UploadStub();
+			return UploadStub() && ReadStubFlashId() != null;
+		}
+
+		private byte StubChecksum(byte[] data, int length)
+		{
+			byte checksum = 0;
+			unchecked
+			{
+				for(int i = 0; i < length; i++)
+					checksum += data[i];
+			}
+			return checksum;
+		}
+
+		private bool ReadStubByte(Stopwatch sw, int timeoutMs, out byte value)
+		{
+			while(sw.ElapsedMilliseconds < timeoutMs && !isCancelled)
+			{
+				if(serial.BytesToRead > 0)
+				{
+					value = (byte)serial.ReadByte();
+					return true;
+				}
+				Thread.Sleep(1);
+			}
+			value = 0;
+			return false;
+		}
+
+		private byte[] ExecuteStubCommand(byte type, byte[] parms = null,
+			float timeout = 0.2f, int expectedReplyLen = 0, int newBaud = 0, bool isErrorExpected = false)
+		{
+			parms = parms ?? new byte[0];
+			var raw = new List<byte>()
+			{
+				0xA5,
+				type,
+				(byte)(parms.Length & 0xFF),
+				(byte)((parms.Length >> 8) & 0xFF)
+			};
+			raw.AddRange(parms);
+			raw.Add(StubChecksum(raw.ToArray(), raw.Count));
+
+			serial.DiscardInBuffer();
+			serial.Write(raw.ToArray(), 0, raw.Count);
+			int timeoutMs = Math.Max(1, (int)(timeout * 1000));
+			Stopwatch sw = Stopwatch.StartNew();
+			byte value;
+			do
+			{
+				if(!ReadStubByte(sw, timeoutMs, out value))
+				{
+					if(!isErrorExpected) addErrorLine("Command response is empty!");
+					return null;
+				}
+			} while(value != 0x5A);
+
+			var response = new List<byte>() { value };
+			for(int i = 0; i < 3; i++)
+			{
+				if(!ReadStubByte(sw, timeoutMs, out value))
+				{
+					if(!isErrorExpected) addErrorLine("Command response header is incomplete!");
+					return null;
+				}
+				response.Add(value);
+			}
+			int dataLength = response[2] | response[3] << 8;
+			for(int i = 0; i < dataLength + 2; i++)
+			{
+				if(!ReadStubByte(sw, timeoutMs, out value))
+				{
+					if(!isErrorExpected) addErrorLine("Command response is incomplete!");
+					return null;
+				}
+				response.Add(value);
+			}
+
+			byte[] bytes = response.ToArray();
+			if(bytes[1] != type)
+			{
+				if(!isErrorExpected) addErrorLine($"Command response type 0x{bytes[1]:X2} does not match 0x{type:X2}!");
+				return null;
+			}
+			if(StubChecksum(bytes, bytes.Length - 1) != bytes[bytes.Length - 1])
+			{
+				addErrorLine("Command checksum is incorrect!");
+				logger.setState("Checksum mismatch!", Color.Red);
+				return null;
+			}
+			byte status = bytes[bytes.Length - 2];
+			if(status != 0)
+			{
+				if(!isErrorExpected)
+				{
+					string statusName = status switch
+					{
+						0x01 => "ERROR",
+						0x02 => "ADDR_ERROR",
+						0x03 => "TYPE_ERROR",
+						0x04 => "LEN_ERROR",
+						0x05 => "CRC_ERROR",
+						_ => $"UNKNOWN_ERROR_{status:X2}"
+					};
+					addErrorLine($"Command status is {statusName}");
+				}
+				return null;
+			}
+			if(dataLength != expectedReplyLen)
+			{
+				if(!isErrorExpected) addErrorLine($"Command reply length {dataLength} != expected {expectedReplyLen}");
+				return null;
+			}
+			if(newBaud > 0)
+				serial.BaudRate = newBaud;
+			var ret = new byte[dataLength];
+			Array.Copy(bytes, 4, ret, 0, dataLength);
+			return ret;
+		}
+
+		private byte[] ReadStubFlashId()
+		{
+			byte[] id = ExecuteStubCommand(CMD_STUB_FLASH_ID, expectedReplyLen: 4);
+			if(id == null)
+				return null;
+			flashID = new byte[] { id[0], id[1], id[2] };
+			addLogLine($"Flash ID: 0x{flashID[0]:X2}{flashID[1]:X2}{flashID[2]:X2}");
+			if(flashID[2] < 0x11 || flashID[2] > 0x1C)
+				throw new Exception("Flash ID incorrect!");
+			flashSizeMB = (1 << (flashID[2] - 0x11)) / 8;
+			addLogLine($"Flash size is {flashSizeMB}MB");
+			return flashID;
 		}
 
 		public override void doWrite(int startSector, byte[] data)
@@ -364,6 +520,19 @@ namespace BK7231Flasher
 
 		private bool SetBaud(int baud, bool noResync = false)
 		{
+			if(chipType == BKType.W800)
+			{
+				if(serial.BaudRate == baud)
+					return true;
+				if(baud != 115200 && baud != 460800 && baud != 921600 && baud != 1000000 && baud != 2000000)
+				{
+					addErrorLine($"W800 custom stub does not support {baud} baud.");
+					return false;
+				}
+				addLogLine($"Changing baud to {baud}...");
+				var stubMsg = BitConverter.GetBytes(baud);
+				return ExecuteStubCommand(CMD_STUB_BAUD, stubMsg, 2, 0, baud) != null;
+			}
 			addLogLine($"Changing baud to {baud}{(!noResync ? ", will resync..." : string.Empty)}");
 			var msg = new byte[4];
 			msg[0] = (byte)(baud & 0xFF);
@@ -382,31 +551,16 @@ namespace BK7231Flasher
 				&& response[0] == 'C' && response[1] == 'C' && response[2] == 'C' && response[3] == 'C';
 		}
 
-		private bool EraseW800Flash()
-		{
-			if(!EraseAndWait("Erasing W800 secboot area...", new byte[] { 0x02, 0x00, 0x0E, 0x00 }, 60))
-			{
-				addErrorLine("W800 secboot erase failed.");
-				return false;
-			}
-
-			int count = flashSizeMB * 16 - 1;
-			byte[] parms =
-			{
-				0x01, 0x80,
-				(byte)(count & 0xFF),
-				(byte)((count >> 8) & 0xFF)
-			};
-			if(!EraseAndWait($"Erasing W800 flash blocks from 0x8001, count {count}...", parms, 60))
-			{
-				addErrorLine("W800 flash erase failed.");
-				return false;
-			}
-			return true;
-		}
-
 		public bool ReadFlash(MemoryStream stream, int offset, int size)
 		{
+			if(chipType == BKType.W800)
+			{
+				byte[] data = ReadStubMemory(offset, size, false, "flash");
+				if(data == null)
+					return false;
+				stream.Write(data, 0, data.Length);
+				return true;
+			}
 			var readLength = 4096;
 			int count = (size + readLength - 1) / readLength;
 			int crcErrCount = 0;
@@ -472,6 +626,165 @@ namespace BK7231Flasher
 			return true;
 		}
 
+		private byte[] ReadStubMemory(int address, int length, bool rawMemory, string label)
+		{
+			if(length <= 0)
+			{
+				addErrorLine("Read length cannot be zero!");
+				return null;
+			}
+			if(!SetBaud(baudrate))
+				return null;
+
+			int received = 0;
+			void Xm_PacketReceived(XMODEM sender, byte[] packet, bool endOfFileDetected)
+			{
+				received += packet.Length;
+				logger.setProgress(Math.Min(received, length), length);
+			}
+
+			try
+			{
+				logger.setProgress(0, length);
+				logger.setState("Reading " + label + "...", Color.Transparent);
+				var msg = new List<byte>();
+				msg.AddRange(BitConverter.GetBytes(address));
+				msg.AddRange(BitConverter.GetBytes(length));
+				byte command = rawMemory ? CMD_STUB_XMODEM_READ_RAW
+					: bUseCompressionIfPossible ? CMD_STUB_XMODEM_READ_COMPRESSED : CMD_STUB_XMODEM_READ;
+				if(!rawMemory && bUseCompressionIfPossible)
+					msg.Add(5);
+
+				if(ExecuteStubCommand(command, msg.ToArray(), 2) == null)
+					return null;
+				using var stream = new MemoryStream();
+				xm.PacketReceived += Xm_PacketReceived;
+				try
+				{
+					var result = xm.Receive(stream);
+					if(result != XMODEM.TerminationReasonEnum.EndOfFile)
+					{
+						addErrorLine($"Read failed with {result}");
+						return null;
+					}
+				}
+				finally
+				{
+					xm.PacketReceived -= Xm_PacketReceived;
+				}
+
+				byte[] ret = stream.ToArray();
+				if(!rawMemory && bUseCompressionIfPossible)
+					ret = Decompress(ret);
+				if(ret.Length < length)
+				{
+					addErrorLine($"Read {ret.Length} bytes, but expected {length}.");
+					return null;
+				}
+				if(ret.Length != length)
+					Array.Resize(ref ret, length);
+				if(!rawMemory && !CheckStubHash(address, ret))
+				{
+					if(!bIgnoreCRCErr)
+						return null;
+				}
+				logger.setProgress(length, length);
+				logger.setState(label + " read success!", Color.Green);
+				addLogLine("Read complete!");
+				return ret;
+			}
+			finally
+			{
+				if(!isCancelled) SetBaud(115200, true);
+			}
+		}
+
+		private bool CheckStubHash(int address, byte[] data)
+		{
+			var msg = new List<byte>();
+			msg.AddRange(BitConverter.GetBytes(address));
+			msg.AddRange(BitConverter.GetBytes(data.Length));
+			byte[] expected = ExecuteStubCommand(CMD_STUB_SHA256, msg.ToArray(), 30, 32);
+			if(expected == null)
+				return false;
+			using var sha256 = SHA256.Create();
+			byte[] actual = sha256.ComputeHash(data);
+			if(!actual.SequenceEqual(expected))
+			{
+				addErrorLine($"Hash mismatch!\r\ndevice:\t{HashToStr(expected)}\r\nflasher:\t{HashToStr(actual)}");
+				logger.setState("SHA mismatch!", Color.Red);
+				return false;
+			}
+			addSuccess($"Hash matches {HashToStr(expected)}!" + Environment.NewLine);
+			return true;
+		}
+
+		private bool WriteStubFlash(int address, byte[] data, bool allowUnalignedStart = false)
+		{
+			int sectorSize = BK7231Flasher.SECTOR_SIZE;
+			if(address < 0x2000 || data == null || data.Length == 0)
+			{
+				addErrorLine("W800 custom stub writes must start in writable flash and contain data.");
+				return false;
+			}
+			if(!allowUnalignedStart && (address & (sectorSize - 1)) != 0)
+			{
+				addErrorLine("W800 custom stub write addresses must be 0x1000-aligned.");
+				return false;
+			}
+			int alignedAddress = address & ~(sectorSize - 1);
+			int prefixLength = address - alignedAddress;
+			int alignedLength = (prefixLength + data.Length + sectorSize - 1) & ~(sectorSize - 1);
+			if(alignedAddress + alignedLength > flashSizeMB * 0x100000)
+			{
+				addErrorLine("W800 write range exceeds detected flash size.");
+				return false;
+			}
+			byte[] alignedData = new byte[alignedLength];
+			for(int i = 0; i < alignedData.Length; i++)
+				alignedData[i] = 0xFF;
+			Array.Copy(data, 0, alignedData, prefixLength, data.Length);
+
+			if(!SetBaud(baudrate))
+				return false;
+			xm.PacketSent += Xm_PacketSent;
+			try
+			{
+				logger.setProgress(0, alignedData.Length);
+				logger.setState("Writing", Color.White);
+				var msg = new List<byte>();
+				msg.AddRange(BitConverter.GetBytes(alignedAddress));
+				msg.AddRange(BitConverter.GetBytes(alignedData.Length));
+				byte command = bUseCompressionIfPossible ? CMD_STUB_XMODEM_WRITE_COMPRESSED : CMD_STUB_XMODEM_WRITE;
+				if(ExecuteStubCommand(command, msg.ToArray(), 2) == null)
+					return false;
+
+				byte[] transferData = bUseCompressionIfPossible ? Compress(alignedData) : alignedData;
+				if(bUseCompressionIfPossible)
+					addLogLine($"Using compression, writing {transferData.Length} bytes instead of {alignedData.Length}.");
+				Stopwatch sw = Stopwatch.StartNew();
+				int sent = xm.Send(transferData, (uint)alignedAddress);
+				sw.Stop();
+				logger.addLog(Environment.NewLine + $"Flash write took {sw.ElapsedMilliseconds} ms" + Environment.NewLine, Color.Gray);
+				if(sent != transferData.Length)
+				{
+					addErrorLine($"Write failed ({xm.TerminationReason})! Expected sent bytes: {transferData.Length}, really sent: {sent}");
+					return false;
+				}
+				if(!CheckStubHash(alignedAddress, alignedData))
+					return false;
+				logger.setProgress(alignedData.Length, alignedData.Length);
+				logger.setState("Writing done", Color.DarkGreen);
+				addLogLine("Flash write complete.");
+				return true;
+			}
+			finally
+			{
+				xm.PacketSent -= Xm_PacketSent;
+				if(!isCancelled) SetBaud(115200, true);
+			}
+		}
+
 		MemoryStream ReadInternal(int startSector, int sectors)
 		{
 			MemoryStream tempResult = new MemoryStream();
@@ -495,7 +808,7 @@ namespace BK7231Flasher
 			{
 				return;
 			}
-			if(InitialSync() && ReadFlashId() != null && UploadStub())
+			if(InitialiseTarget())
 			{
 				try
 				{
@@ -504,7 +817,8 @@ namespace BK7231Flasher
 					{
 						sectors = flashSizeMB * 0x100000 / BK7231Flasher.SECTOR_SIZE;
 					}
-					ms = ReadInternal(startSector | 0x08000000, sectors);
+					int readAddress = chipType == BKType.W800 ? startSector : startSector | 0x08000000;
+					ms = ReadInternal(readAddress, sectors);
 					if(ms == null)
 					{
 						return;
@@ -541,20 +855,11 @@ namespace BK7231Flasher
 					addErrorLine("Selected W800 ROM read range is outside mask ROM.");
 					return null;
 				}
-				if(doGenericSetup() == false || InitialSync() == false || ReadFlashId() == null || UploadStub() == false)
+				if(doGenericSetup() == false || InitialiseTarget() == false)
 				{
 					return null;
 				}
-				if(SetBaud(baudrate) == false)
-				{
-					return null;
-				}
-				var result = new MemoryStream();
-				if(ReadFlash(result, target.Address.Value, target.Length.Value) == false)
-				{
-					return null;
-				}
-				return result.ToArray();
+				return ReadStubMemory(target.Address.Value, target.Length.Value, true, "mask ROM");
 			}
 			catch(Exception ex)
 			{
@@ -576,22 +881,46 @@ namespace BK7231Flasher
 		{
 			if(!bAll)
 			{
-				addErrorLine("W600/W800 range erase is not implemented.");
-				return false;
+				if(chipType == BKType.W600)
+				{
+					addErrorLine("W600 range erase is not implemented.");
+					return false;
+				}
+				if(startSector < 0x2000 || (startSector & (BK7231Flasher.SECTOR_SIZE - 1)) != 0 || sectors <= 0)
+				{
+					addErrorLine("W800 erase range must be 0x1000-aligned, in writable flash, and contain at least one sector.");
+					return false;
+				}
 			}
 
 			if(doGenericSetup() == false)
 			{
 				return false;
 			}
-			if(InitialSync() == false || ReadFlashId() == null || UploadStub() == false)
+			if(InitialiseTarget() == false)
 			{
 				return false;
 			}
 
-			bool ok = chipType == BKType.W600
-				? EraseAndWait("Erasing W600 flash...", null, 24)
-				: EraseW800Flash();
+			bool ok;
+			if(chipType == BKType.W600)
+			{
+				ok = EraseAndWait("Erasing W600 flash...", null, 24);
+			}
+			else if(bAll)
+			{
+				addLogLine("Erasing writable W800 flash (the protected first 8 KiB is preserved)...");
+				ok = ExecuteStubCommand(CMD_STUB_FLASH_CHIP_ERASE, timeout: 180) != null;
+			}
+			else
+			{
+				int length = sectors * BK7231Flasher.SECTOR_SIZE;
+				var msg = new List<byte>();
+				msg.AddRange(BitConverter.GetBytes(startSector));
+				msg.AddRange(BitConverter.GetBytes(length));
+				addLogLine($"Erasing W800 flash at 0x{startSector:X}, length 0x{length:X}...");
+				ok = ExecuteStubCommand(CMD_STUB_FLASH_ERASE, msg.ToArray(), 60) != null;
+			}
 			if(ok)
 			{
 				logger.setState("Erase done", Color.DarkGreen);
@@ -633,18 +962,20 @@ namespace BK7231Flasher
 			{
 				return;
 			}
-			if(InitialSync() && ReadFlashId() != null && UploadStub())
+			if(InitialiseTarget())
 			{
 				try
 				{
-					xm.PacketSent += Xm_PacketSent;
+					if(chipType != BKType.W800)
+						xm.PacketSent += Xm_PacketSent;
 					SetBaud(baudrate);
 					OBKConfig cfg = rwMode == WriteMode.OnlyOBKConfig ? logger.getConfig() : logger.getConfigToWrite();
 					if(rwMode == WriteMode.ReadAndWrite)
 					{
 						sectors = flashSizeMB * 0x100000 / BK7231Flasher.SECTOR_SIZE;
 						addLogLine($"Flash size detected: {sectors / 256}MB");
-						ms = ReadInternal(startSector | 0x08000000, sectors);
+						int readAddress = chipType == BKType.W800 ? startSector : startSector | 0x08000000;
+						ms = ReadInternal(readAddress, sectors);
 						if(ms == null)
 						{
 							return;
@@ -665,7 +996,39 @@ namespace BK7231Flasher
 						byte[] data = File.ReadAllBytes(sourceFileName);
 						addLogLine("Starting flash write " + data.Length);
 						logger.setState("Writing", Color.White);
-						if(sourceFileName.EndsWith(".fls"))
+						if(chipType == BKType.W800)
+						{
+							bool writeOk;
+							if(bCustomWriteMode)
+							{
+								writeOk = WriteStubFlash(startSector, data);
+							}
+							else if(sourceFileName.EndsWith(".fls", StringComparison.OrdinalIgnoreCase))
+							{
+								writeOk = WriteW800Fls(data);
+							}
+							else if(data.Length >= 0x100000)
+							{
+								startSector = 0x2000;
+								if(data[startSector] != 0x9F || data[startSector + 1] != 0xFF ||
+									data[startSector + 2] != 0xFF || data[startSector + 3] != 0xA0)
+								{
+									addErrorLine("Unknown file type, no firmware header at 0x2000!");
+									return;
+								}
+								var cutData = new byte[data.Length - startSector];
+								Array.Copy(data, startSector, cutData, 0, cutData.Length);
+								writeOk = WriteStubFlash(startSector, cutData);
+							}
+							else
+							{
+								addErrorLine("Unknown file type, skipping.");
+								return;
+							}
+							if(!writeOk)
+								return;
+						}
+						else if(sourceFileName.EndsWith(".fls", StringComparison.OrdinalIgnoreCase))
 						{
 							var res = xm.Send(data);
 							if(res == data.Length)
@@ -694,16 +1057,12 @@ namespace BK7231Flasher
 								var cutData = new byte[data.Length - startSector];
 								Array.Copy(data, startSector, cutData, 0, cutData.Length);
 								startSector |= 0x08000000;
-								var fls = GenerateW800PseudoFLSFromData(cutData, startSector);
-								if(chipType == BKType.W600)
+								if(secBootHeader[60] != 0xFF || secBootHeader[61] != 0xFF || secBootHeader[62] != 0xFF || secBootHeader[63] != 0xFF)
 								{
-									if(secBootHeader[60] != 0xFF || secBootHeader[61] != 0xFF || secBootHeader[62] != 0xFF || secBootHeader[63] != 0xFF)
-									{
-										addErrorLine("Not W600 backup!");
-										return;
-									}
-									fls = GenerateW600PseudoFLSFromData(cutData, startSector);
+									addErrorLine("Not W600 backup!");
+									return;
 								}
+								var fls = GenerateW600PseudoFLSFromData(cutData, startSector);
 								var res = xm.Send(fls, (uint)(startSector ^ 0x08000000));
 								if(res == fls.Length)
 								{
@@ -747,9 +1106,17 @@ namespace BK7231Flasher
 						addLog("Long name from CFG: " + cfg.longDeviceName + Environment.NewLine);
 						addLog("Short name from CFG: " + cfg.shortDeviceName + Environment.NewLine);
 						addLog("Web Root from CFG: " + cfg.webappRoot + Environment.NewLine);
-						var fls = chipType != BKType.W600 ? GenerateW800PseudoFLSFromData(data, offset - 0x303) : GenerateW600PseudoFLSFromData(data, offset);
-						var res = xm.Send(fls, (uint)(offset ^ 0x08000000));
-						if(res == fls.Length)
+						bool configWritten;
+						if(chipType == BKType.W800)
+						{
+							configWritten = WriteStubFlash((offset ^ 0x08000000) - 0x303, data);
+						}
+						else
+						{
+							var fls = GenerateW600PseudoFLSFromData(data, offset);
+							configWritten = xm.Send(fls, (uint)(offset ^ 0x08000000)) == fls.Length;
+						}
+						if(configWritten)
 						{
 							logger.setState("OBK config write success!", Color.Green);
 							logger.setProgress(1, 1);
@@ -770,49 +1137,60 @@ namespace BK7231Flasher
 				}
 				finally
 				{
-					xm.PacketSent -= Xm_PacketSent;
+					if(chipType != BKType.W800)
+						xm.PacketSent -= Xm_PacketSent;
 					if(!isCancelled) SetBaud(115200, true);
 				}
 			}
 		}
 
-		byte[] GenerateW800PseudoFLSFromData(byte[] data, int startAddr)
+		private bool WriteW800Fls(byte[] fls)
 		{
-			var crc = CRC.crc32_ver2(0xFFFFFFFF, data);
-			var fls = new List<byte>()
+			const int headerLength = 64;
+			const uint flashBase = 0x08000000;
+			int cursor = 0;
+			int segment = 0;
+			while(cursor < fls.Length)
 			{
-				0x9F, 0xFF, 0xFF, 0xA0,
-				0x00, 0x02, 0x00, 0x00,
-				(byte)(startAddr & 0xFF),
-				(byte)((startAddr >> 8) & 0xFF),
-				(byte)((startAddr >> 16) & 0xFF),
-				(byte)((startAddr >> 24) & 0xFF),
-				(byte)(data.Length & 0xFF),
-				(byte)((data.Length >> 8) & 0xFF),
-				(byte)((data.Length >> 16) & 0xFF),
-				(byte)((data.Length >> 24) & 0xFF),
-				0x00, 0x00, 0x00, 0x00,
-				0x00, 0x00, 0x00, 0x00,
-				(byte)(crc & 0xFF),
-				(byte)((crc >> 8) & 0xFF),
-				(byte)((crc >> 16) & 0xFF),
-				(byte)((crc >> 24) & 0xFF),
-				0x00, 0x00, 0x00, 0x00,
-				0x31, 0x00, 0x00, 0x00,
-				0x00, 0x00, 0x00, 0x00,
-				0x00, 0x00, 0x00, 0x00,
-				0x00, 0x00, 0x00, 0x00,
-				0x00, 0x00, 0x00, 0x00,
-				0x00, 0x00, 0x00, 0x00,
-				0x00, 0x00, 0x00, 0x00,
-			};
-			var crcHdr = CRC.crc32_ver2(0xFFFFFFFF, fls.ToArray());
-			fls.Add((byte)(crcHdr & 0xFF));
-			fls.Add((byte)((crcHdr >> 8) & 0xFF));
-			fls.Add((byte)((crcHdr >> 16) & 0xFF));
-			fls.Add((byte)((crcHdr >> 24) & 0xFF));
-			fls.AddRange(data);
-			return fls.ToArray();
+				if(fls.Length - cursor < headerLength || fls[cursor] != 0x9F || fls[cursor + 1] != 0xFF ||
+					fls[cursor + 2] != 0xFF || fls[cursor + 3] != 0xA0)
+				{
+					addErrorLine($"Invalid W800 FLS header at file offset 0x{cursor:X}.");
+					return false;
+				}
+				uint address = BitConverter.ToUInt32(fls, cursor + 8);
+				uint length = BitConverter.ToUInt32(fls, cursor + 12);
+				if(length == 0 || length > int.MaxValue || length > fls.Length - cursor - headerLength)
+				{
+					addErrorLine($"Invalid W800 FLS segment length at file offset 0x{cursor:X}.");
+					return false;
+				}
+				uint expectedHeaderCrc = BitConverter.ToUInt32(fls, cursor + 60);
+				uint actualHeaderCrc = CRC.crc32_ver2(0xFFFFFFFF, fls, 60, (uint)cursor);
+				uint expectedPayloadCrc = BitConverter.ToUInt32(fls, cursor + 24);
+				uint actualPayloadCrc = CRC.crc32_ver2(0xFFFFFFFF, fls, (int)length, (uint)(cursor + headerLength));
+				if(expectedHeaderCrc != actualHeaderCrc || expectedPayloadCrc != actualPayloadCrc)
+				{
+					addErrorLine($"W800 FLS CRC mismatch in segment {segment + 1}.");
+					return false;
+				}
+				ulong endAddress = (ulong)address + length;
+				ulong flashEnd = (ulong)flashBase + (uint)(flashSizeMB * 0x100000);
+				if(address < flashBase + 0x2000 || endAddress > flashEnd)
+				{
+					addErrorLine($"W800 FLS segment {segment + 1} is outside writable flash.");
+					return false;
+				}
+
+				byte[] payload = new byte[(int)length];
+				Array.Copy(fls, cursor + headerLength, payload, 0, payload.Length);
+				addLogLine($"Writing W800 FLS segment {segment + 1}: flash 0x{address - flashBase:X}, length 0x{length:X}.");
+				if(!WriteStubFlash((int)(address - flashBase), payload, true))
+					return false;
+				cursor += headerLength + payload.Length;
+				segment++;
+			}
+			return segment > 0;
 		}
 
 		byte[] GenerateW600PseudoFLSFromData(byte[] data, int startAddr)
@@ -870,6 +1248,13 @@ namespace BK7231Flasher
 		{
 			string fileName = MiscUtils.formatDateNowFileName("readResult_" + chipType, backupName, "bin");
 			return saveReadResult(fileName);
+		}
+
+		internal override byte[] ReadMAC()
+		{
+			if(chipType != BKType.W800 || serial == null || !serial.IsOpen)
+				return null;
+			return ExecuteStubCommand(CMD_STUB_GET_MAC, expectedReplyLen: 6, isErrorExpected: true);
 		}
 	}
 }
