@@ -389,7 +389,10 @@ namespace BK7231Flasher
 				return null;
 			}
 			if(newBaud > 0)
+			{
 				serial.BaudRate = newBaud;
+				Thread.Sleep(10);
+			}
 			var ret = new byte[dataLength];
 			Array.Copy(bytes, 4, ret, 0, dataLength);
 			return ret;
@@ -653,12 +656,13 @@ namespace BK7231Flasher
 				byte command = rawMemory ? CMD_STUB_XMODEM_READ_RAW
 					: bUseCompressionIfPossible ? CMD_STUB_XMODEM_READ_COMPRESSED : CMD_STUB_XMODEM_READ;
 				if(!rawMemory && bUseCompressionIfPossible)
-					msg.Add(5);
+					msg.Add(2);
 
 				if(ExecuteStubCommand(command, msg.ToArray(), 2) == null)
 					return null;
 				using var stream = new MemoryStream();
 				xm.PacketReceived += Xm_PacketReceived;
+				Stopwatch sw = Stopwatch.StartNew();
 				try
 				{
 					var result = xm.Receive(stream);
@@ -670,12 +674,18 @@ namespace BK7231Flasher
 				}
 				finally
 				{
+					sw.Stop();
 					xm.PacketReceived -= Xm_PacketReceived;
 				}
+				logger.addLog(Environment.NewLine + $"Flash read took {sw.ElapsedMilliseconds} ms" + Environment.NewLine, Color.Gray);
 
 				byte[] ret = stream.ToArray();
 				if(!rawMemory && bUseCompressionIfPossible)
+				{
+					int compressedLength = ret.Length;
 					ret = Decompress(ret);
+					addLogLine($"Uncompressed {compressedLength} bytes to {ret.Length} bytes, compression rate - {((double)ret.Length - compressedLength) / ret.Length * 100.0:F2}%");
+				}
 				if(ret.Length < length)
 				{
 					addErrorLine($"Read {ret.Length} bytes, but expected {length}.");
@@ -761,7 +771,7 @@ namespace BK7231Flasher
 
 				byte[] transferData = bUseCompressionIfPossible ? Compress(alignedData) : alignedData;
 				if(bUseCompressionIfPossible)
-					addLogLine($"Using compression, writing {transferData.Length} bytes instead of {alignedData.Length}.");
+					addLogLine($"Using compression, writing {transferData.Length} bytes, compression rate - {((double)alignedData.Length - transferData.Length) / alignedData.Length * 100.0:F2}%");
 				Stopwatch sw = Stopwatch.StartNew();
 				int sent = xm.Send(transferData, (uint)alignedAddress);
 				sw.Stop();
@@ -781,7 +791,6 @@ namespace BK7231Flasher
 			finally
 			{
 				xm.PacketSent -= Xm_PacketSent;
-				if(!isCancelled) SetBaud(115200, true);
 			}
 		}
 
