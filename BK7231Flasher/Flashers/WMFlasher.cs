@@ -5,7 +5,6 @@ using System.Drawing;
 using System.IO;
 using System.IO.Ports;
 using System.Linq;
-using System.Security.Cryptography;
 using System.Threading;
 
 namespace BK7231Flasher
@@ -21,7 +20,7 @@ namespace BK7231Flasher
 		const byte CMD_STUB_FLASH_ERASE = 0x04;
 		const byte CMD_STUB_FLASH_CHIP_ERASE = 0x05;
 		const byte CMD_STUB_BAUD = 0x07;
-		const byte CMD_STUB_SHA256 = 0x09;
+		const byte CMD_STUB_CRC32 = 0x8F;
 		const byte CMD_STUB_FLASH_ID = 0x90;
 		const byte CMD_STUB_XMODEM_WRITE = 0x91;
 		const byte CMD_STUB_XMODEM_READ = 0x92;
@@ -271,6 +270,11 @@ namespace BK7231Flasher
 
 		private bool InitialiseTarget()
 		{
+			if(chipType == BKType.W800 && ReadStubFlashId(true) != null)
+			{
+				addLogLine("Stub is already uploaded!");
+				return true;
+			}
 			if(!InitialSync())
 				return false;
 			if(chipType == BKType.W600)
@@ -398,9 +402,9 @@ namespace BK7231Flasher
 			return ret;
 		}
 
-		private byte[] ReadStubFlashId()
+		private byte[] ReadStubFlashId(bool isErrorExpected = false)
 		{
-			byte[] id = ExecuteStubCommand(CMD_STUB_FLASH_ID, expectedReplyLen: 4);
+			byte[] id = ExecuteStubCommand(CMD_STUB_FLASH_ID, expectedReplyLen: 4, isErrorExpected: isErrorExpected);
 			if(id == null)
 				return null;
 			flashID = new byte[] { id[0], id[1], id[2] };
@@ -527,7 +531,8 @@ namespace BK7231Flasher
 			{
 				if(serial.BaudRate == baud)
 					return true;
-				if(baud != 115200 && baud != 460800 && baud != 921600 && baud != 1000000 && baud != 2000000)
+				if(baud != 115200 && baud != 230400 && baud != 460800 && baud != 921600 &&
+					baud != 1000000 && baud != 1250000 && baud != 1500000 && baud != 2000000)
 				{
 					addErrorLine($"W800 custom stub does not support {baud} baud.");
 					return false;
@@ -693,7 +698,7 @@ namespace BK7231Flasher
 				}
 				if(ret.Length != length)
 					Array.Resize(ref ret, length);
-				if(!rawMemory && !CheckStubHash(address, ret))
+				if(!rawMemory && !CheckStubCrc(address, ret))
 				{
 					if(!bIgnoreCRCErr)
 						return null;
@@ -709,23 +714,23 @@ namespace BK7231Flasher
 			}
 		}
 
-		private bool CheckStubHash(int address, byte[] data)
+		private bool CheckStubCrc(int address, byte[] data)
 		{
 			var msg = new List<byte>();
 			msg.AddRange(BitConverter.GetBytes(address));
 			msg.AddRange(BitConverter.GetBytes(data.Length));
-			byte[] expected = ExecuteStubCommand(CMD_STUB_SHA256, msg.ToArray(), 30, 32);
+			byte[] expected = ExecuteStubCommand(CMD_STUB_CRC32, msg.ToArray(), 30, 4);
 			if(expected == null)
 				return false;
-			using var sha256 = SHA256.Create();
-			byte[] actual = sha256.ComputeHash(data);
-			if(!actual.SequenceEqual(expected))
+			uint expectedCrc = BitConverter.ToUInt32(expected, 0);
+			uint actualCrc = CRC.crc32_ver2(0xFFFFFFFF, data);
+			if(actualCrc != expectedCrc)
 			{
-				addErrorLine($"Hash mismatch!\r\ndevice:\t{HashToStr(expected)}\r\nflasher:\t{HashToStr(actual)}");
-				logger.setState("SHA mismatch!", Color.Red);
+				addErrorLine($"CRC32 mismatch!\r\ndevice:\t{expectedCrc:X8}\r\nflasher:\t{actualCrc:X8}");
+				logger.setState("CRC32 mismatch!", Color.Red);
 				return false;
 			}
-			addSuccess($"Hash matches {HashToStr(expected)}!" + Environment.NewLine);
+			addSuccess($"CRC32 matches {expectedCrc:X8}!" + Environment.NewLine);
 			return true;
 		}
 
@@ -781,7 +786,7 @@ namespace BK7231Flasher
 					addErrorLine($"Write failed ({xm.TerminationReason})! Expected sent bytes: {transferData.Length}, really sent: {sent}");
 					return false;
 				}
-				if(!CheckStubHash(alignedAddress, alignedData))
+				if(!CheckStubCrc(alignedAddress, alignedData))
 					return false;
 				logger.setProgress(alignedData.Length, alignedData.Length);
 				logger.setState("Writing done", Color.DarkGreen);
