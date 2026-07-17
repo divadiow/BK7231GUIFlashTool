@@ -1174,6 +1174,7 @@ namespace BK7231Flasher
 				}
 				uint address = BitConverter.ToUInt32(fls, cursor + 8);
 				uint length = BitConverter.ToUInt32(fls, cursor + 12);
+				uint headerAddress = BitConverter.ToUInt32(fls, cursor + 16);
 				if(length == 0 || length > int.MaxValue || length > fls.Length - cursor - headerLength)
 				{
 					addErrorLine($"Invalid W800 FLS segment length at file offset 0x{cursor:X}.");
@@ -1190,18 +1191,24 @@ namespace BK7231Flasher
 				}
 				ulong endAddress = (ulong)address + length;
 				ulong flashEnd = (ulong)flashBase + (uint)(flashSizeMB * 0x100000);
-				if(address < flashBase + 0x2000 || endAddress > flashEnd)
+				ulong imageLength = (ulong)address - headerAddress + length;
+				if(headerAddress < flashBase + 0x2000 || address < (ulong)headerAddress + headerLength ||
+					endAddress > flashEnd || imageLength > int.MaxValue)
 				{
 					addErrorLine($"W800 FLS segment {segment + 1} is outside writable flash.");
 					return false;
 				}
 
-				byte[] payload = new byte[(int)length];
-				Array.Copy(fls, cursor + headerLength, payload, 0, payload.Length);
-				addLogLine($"Writing W800 FLS segment {segment + 1}: flash 0x{address - flashBase:X}, length 0x{length:X}.");
-				if(!WriteStubFlash((int)(address - flashBase), payload, true))
+				int payloadOffset = (int)(address - headerAddress);
+				byte[] image = new byte[(int)imageLength];
+				for(int i = 0; i < image.Length; i++)
+					image[i] = 0xFF;
+				Array.Copy(fls, cursor, image, 0, headerLength);
+				Array.Copy(fls, cursor + headerLength, image, payloadOffset, (int)length);
+				addLogLine($"Writing W800 FLS segment {segment + 1}: header 0x{headerAddress - flashBase:X}, payload 0x{address - flashBase:X}, length 0x{length:X}.");
+				if(!WriteStubFlash((int)(headerAddress - flashBase), image, true))
 					return false;
-				cursor += headerLength + payload.Length;
+				cursor += headerLength + (int)length;
 				segment++;
 			}
 			return segment > 0;
