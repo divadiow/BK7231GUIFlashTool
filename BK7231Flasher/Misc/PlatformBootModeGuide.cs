@@ -38,7 +38,7 @@ namespace BK7231Flasher
             { BKType.RTL87X0C, GetRtl87x0cInstructions() },
             { BKType.RDA5981, GetRda5981Instructions() },
             { BKType.TR6260, "" },
-            { BKType.W800, "" },
+            { BKType.W800, GetW800Instructions() },
             { BKType.XR806, GetXr806Instructions() },
             { BKType.XR809, GetXrUart0TwoBootPinsInstructions("XR809") },
             { BKType.XR872, GetXrUart0TwoBootPinsInstructions("XR872") },
@@ -110,6 +110,17 @@ namespace BK7231Flasher
                 "- Adapter GND -> target GND" + System.Environment.NewLine +
                 GetPowerAndGroundInstructions() + System.Environment.NewLine +
                 "Start the read first. While the tool is trying to connect, reset the target by briefly pulling RST low, or power-cycle the 3.3 V supply. If linking does not start, try the reset or power-cycle again.";
+        }
+
+        static string GetW800Instructions()
+        {
+            return "Connect the W800 UART0 flashing port to a USB-to-TTL serial adapter:" + System.Environment.NewLine +
+                "- Adapter RX -> W800 UART0_TX (PB19)" + System.Environment.NewLine +
+                "- Adapter TX -> W800 UART0_RX (PB20)" + System.Environment.NewLine +
+                "- Adapter GND -> target GND" + System.Environment.NewLine +
+                GetPowerAndGroundInstructions() + System.Environment.NewLine +
+                "First try starting the read with the target running normally. The flasher will send the AT+Z software-reset command at 115200 baud, then send ESC characters while waiting for ROM download mode. Software reset only works when the existing firmware accepts WinnerMicro AT commands." + System.Environment.NewLine +
+                "If automatic entry does not work, start the read, hold BOOTMODE low, then reset the chip by briefly pulling RESET low or by power-cycling the 3.3 V supply. Keep BOOTMODE low for at least 30 ms after reset or power-on, then release it while the tool is trying to connect.";
         }
 
         static string GetGd32vw553Instructions()
