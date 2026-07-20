@@ -528,6 +528,8 @@ namespace BK7231Flasher
 
         // Indicates whether a valid packet has been received and is fit to be forwarded to user
         private bool ValidPacketReceived = false;
+        // Serial receive events and the timeout watchdog both update receiver parser state.
+        private readonly object ReceiverStateLock = new object();
 
         /// <summary>
         /// State machine dispatcher.
@@ -535,6 +537,14 @@ namespace BK7231Flasher
         /// <param name="sender"></param>
         /// <param name="e"></param>
         private void Port_DataReceived(object sender, SerialDataReceivedEventArgs e)
+        {
+            lock (ReceiverStateLock)
+            {
+                ProcessReceivedData(sender);
+            }
+        }
+
+        private void ProcessReceivedData(object sender)
         {
             SerialPort sp = sender as SerialPort;
             int numBytes = sp.BytesToRead;
@@ -663,7 +673,24 @@ namespace BK7231Flasher
         /// <param name="notUsed"></param>
         private void NAKNag(object notUsed)
         {
-            SendNAK();
+            lock (ReceiverStateLock)
+            {
+                if (CurrentState == States.ReceiverBlockNumSearch ||
+                    CurrentState == States.ReceiverBlockNumComplementSearch ||
+                    CurrentState == States.ReceiverDataBytesSearch ||
+                    CurrentState == States.ReceiverErrorCheckSearch)
+                {
+                    // Abandon an incomplete packet before requesting its retransmission.
+                    CurrentState = States.ReceiverHeaderSearch;
+                    Remainder = new byte[0];
+                    DataPacketReceived = null;
+                    DataPacketNumBytesStored = 0;
+                    ErrorCheck = null;
+                    ValidPacketReceived = false;
+                    Port.DiscardInBuffer();
+                }
+                SendNAK();
+            }
         }
 
         private void SendNAK()
@@ -1003,11 +1030,13 @@ namespace BK7231Flasher
                         ErrorCheck = new byte[] { BytesToParse[searchStartIndex] };
 
                         // Validate packet
-                        ValidatePacket();
+                        bool packetAccepted = ValidatePacket();
 
                         // Start over               
                         headerByteSearchStartIndex = searchStartIndex + 1;
                         CurrentState = States.ReceiverHeaderSearch;
+                        if (packetAccepted == false)
+                            return;
                     }
                     else  // XModem-CRC or XModem-1K
                     {
@@ -1023,11 +1052,13 @@ namespace BK7231Flasher
                         if (ErrorCheck.Length >= 2)
                         {
                             // We have enough error-check bytes, so validate packet
-                            ValidatePacket();
+                            bool packetAccepted = ValidatePacket();
 
                             // Return to the initial state and start over               
                             headerByteSearchStartIndex = searchStartIndex + 1;
                             CurrentState = States.ReceiverHeaderSearch;
+                            if (packetAccepted == false)
+                                return;
                         }
                         else
                         {
@@ -1039,7 +1070,7 @@ namespace BK7231Flasher
             } // End while
         } // End method
 
-        private void ValidatePacket()
+        private bool ValidatePacket()
         {
             // In order for a packet to be accepted, it must be an expected block number, and the transmitted
             // check value must match the calculated check value.
@@ -1073,12 +1104,12 @@ namespace BK7231Flasher
 
                     // Notify Sender to send the next packet
                     SendACK();
+                    return true;
                 }
                 else
                 {
                     // Inform sender that checksum invalid
-                    SendNAK();
-                    ValidPacketReceived = false;
+                    return RejectPacket();
                 }
             }
             else if (ExpectingFirstPacket == false && BlockNumReceived == (byte)(BlockNumExpected - 1))
@@ -1087,13 +1118,22 @@ namespace BK7231Flasher
                 // Send <ACK> to prompt the Sender to advance to the next packet. Ignore the current (redundant) packet.
                 SendACK();
                 ValidPacketReceived = false;
+                return true;
             }
             else
             {
                 // The block number is completely out of sequence, so send NAK
-                SendNAK();
-                ValidPacketReceived = false;
+                return RejectPacket();
             }
+        }
+
+        private bool RejectPacket()
+        {
+            // Remove the rejected packet's unread tail before the sender retransmits it.
+            Port.DiscardInBuffer();
+            SendNAK();
+            ValidPacketReceived = false;
+            return false;
         }
 
         /// <summary>

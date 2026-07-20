@@ -292,6 +292,11 @@ namespace BK7231Flasher
 					ret = Decompress(ret);
 					addLogLine($"Uncompressed {compressedLength} bytes to {ret.Length} bytes, compression rate - {((double)ret.Length - compressedLength) / ret.Length * 100.0:F2}%");
 				}
+				if(ret.Length != startAmount)
+				{
+					addErrorLine($"Flash read returned {ret.Length} bytes; expected {startAmount} bytes.");
+					return null;
+				}
 				addLogLine("Getting hash...");
 				if(!CheckHash(addr, startAmount, ret))
 				{
