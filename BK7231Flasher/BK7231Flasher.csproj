@@ -76,7 +76,8 @@
     <Compile Include="Flashers\XR872Flasher.cs" />
     <Compile Include="Flashers\ESPFlasher.cs" />
     <Compile Include="Utils\Xmodem.cs" />
-    <Compile Include="Flashers\WMFlasher.cs" />
+    <Compile Include="Flashers\W600Flasher.cs" />
+    <Compile Include="Flashers\W800Flasher.cs" />
     <Compile Include="Flashers\ECR6600Flasher.cs" />
     <Compile Include="Flashers\BaseFlasher.cs" />
     <Compile Include="Flashers\FlasherFactory.cs" />

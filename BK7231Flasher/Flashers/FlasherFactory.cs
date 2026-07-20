@@ -28,8 +28,9 @@ namespace BK7231Flasher
                 case BKType.ECR6600:
                     return new ECR6600Flasher(cancellationToken);
                 case BKType.W600:
+                    return new W600Flasher(cancellationToken);
                 case BKType.W800:
-                    return new WMFlasher(cancellationToken);
+                    return new W800Flasher(cancellationToken);
                 case BKType.RDA5981:
                     return new RDAFlasher(cancellationToken);
                 case BKType.XR806:

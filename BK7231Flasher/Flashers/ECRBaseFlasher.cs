@@ -116,7 +116,7 @@ namespace BK7231Flasher
 			return saveReadResult(fileName);
 		}
 
-		protected byte[] ExecuteCommand(int type, byte[] parms = null,
+		protected virtual byte[] ExecuteCommand(int type, byte[] parms = null,
 			float timeout = 0.1f, int expectedReplyLen = 0, int br = 115200, bool isErrorExpected = false)
 		{
 			parms = parms ?? (new byte[0]);
@@ -237,6 +237,7 @@ namespace BK7231Flasher
 					byte comprLevel = chipType switch
 					{
 						BKType.ECR6600 => 2,
+						BKType.W800 => 2,
 						BKType.GD32VW553 => 2,
 						BKType.RDA5981 => 5,
 						BKType.RTL8710B => 2,
@@ -285,7 +286,12 @@ namespace BK7231Flasher
 				}
 				logger.addLog(Environment.NewLine + $"Flash read took {sw.ElapsedMilliseconds} ms" + Environment.NewLine, Color.Gray);
 				if(isCancelled) return null;
-				if(bUseCompressionIfPossible) ret = Decompress(ret);
+				if(bUseCompressionIfPossible)
+				{
+					int compressedLength = ret.Length;
+					ret = Decompress(ret);
+					addLogLine($"Uncompressed {compressedLength} bytes to {ret.Length} bytes, compression rate - {((double)ret.Length - compressedLength) / ret.Length * 100.0:F2}%");
+				}
 				addLogLine("Getting hash...");
 				if(!CheckHash(addr, startAmount, ret))
 				{
