@@ -667,6 +667,7 @@ namespace BK7231Flasher
 					return null;
 				using var stream = new MemoryStream();
 				xm.PacketReceived += Xm_PacketReceived;
+				xm.ReceiverTimeoutMillisec = 1000;
 				Stopwatch sw = Stopwatch.StartNew();
 				try
 				{
