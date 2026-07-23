@@ -113,7 +113,13 @@ namespace BK7231Flasher
             tabPageBl602Io.Controls.Add(labelBl602IoStatus);
             tabPageBl602Io.Controls.Add(commandBar);
             int tuyaConfigTabIndex = tabControl1.TabPages.IndexOf(tabPage2);
-            tabControl1.TabPages.Insert(tuyaConfigTabIndex, tabPageBl602Io);
+            TabPage[] trailingTabs = new TabPage[tabControl1.TabPages.Count - tuyaConfigTabIndex];
+            for (int index = 0; index < trailingTabs.Length; index++)
+                trailingTabs[index] = tabControl1.TabPages[tuyaConfigTabIndex + index];
+            foreach (TabPage trailingTab in trailingTabs)
+                tabControl1.TabPages.Remove(trailingTab);
+            tabControl1.TabPages.Add(tabPageBl602Io);
+            tabControl1.TabPages.AddRange(trailingTabs);
         }
 
         private void TabPageBl602Io_DragEnter(object sender, DragEventArgs e)
