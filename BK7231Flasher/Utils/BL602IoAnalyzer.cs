@@ -332,6 +332,9 @@ namespace BK7231Flasher
                 {
                     hasStrongProductDtb = true;
                     ExtractConfigGpioFindings(result, nodes, options.UnusedPinSentinel);
+                    const string configGpioNote = "A /config_gpio pin is a firmware assignment, not proof that the corresponding component is populated on this PCB; some product-family dumps retain unused variant slots.";
+                    if (!result.Notes.Contains(configGpioNote))
+                        result.Notes.Add(configGpioNote);
                 }
 
                 if (ExtractVerifiedLightingFindings(result, nodes))
@@ -715,10 +718,10 @@ namespace BK7231Flasher
 
                     retainedChannels.Add(channel);
                     AddFinding(result, pin.Value,
-                        "Relay/output channel " + (channel + 1).ToString(CultureInfo.InvariantCulture),
-                        Confidence.VeryHigh,
+                        "Firmware-configured output channel " + (channel + 1).ToString(CultureInfo.InvariantCulture),
+                        Confidence.High,
                         "DTB /config_gpio/config_channel",
-                        pair.Key,
+                        pair.Key + "; PCB population not proven by DTB",
                         false);
                 }
             }
@@ -737,7 +740,7 @@ namespace BK7231Flasher
 
                     bool paired = retainedChannels.Contains(keyIndex);
                     AddFinding(result, pin.Value,
-                        "Key/input " + (keyIndex + 1).ToString(CultureInfo.InvariantCulture),
+                        "Firmware-configured key/input " + (keyIndex + 1).ToString(CultureInfo.InvariantCulture),
                         paired || keyIndex == 0 ? Confidence.High : Confidence.Medium,
                         "DTB /config_gpio/config_key",
                         pair.Key + (paired ? "; paired with output channel" : "; precise button/toggle role unresolved"),
@@ -1801,24 +1804,26 @@ namespace BK7231Flasher
                 foreach (int pin in candidate.Pins)
                 {
                     AddFinding(result, pin,
-                        "Application-controlled digital output candidate",
-                        Confidence.Medium,
+                        "Generic application call-pattern candidate; role unresolved",
+                        Confidence.Low,
                         "Application RV32 analysis",
                         "recurrent calls to target 0x" + candidate.Target.ToString("X", CultureInfo.InvariantCulture) +
-                        "; " + candidate.CallCount.ToString(CultureInfo.InvariantCulture) + " calls",
-                        false);
+                        "; " + candidate.CallCount.ToString(CultureInfo.InvariantCulture) + " calls; target semantics not verified as GPIO",
+                        true);
                 }
                 foreach (PinPairCount pair in candidate.ComplementaryPairs.Where(item => item.Count >= 2).Take(4))
                 {
                     string evidence = "paired calls involving GPIO" + pair.First.ToString(CultureInfo.InvariantCulture) +
                         " and GPIO" + pair.Second.ToString(CultureInfo.InvariantCulture) +
-                        "; role may be bridge, latching relay or dual indicator";
-                    AddFinding(result, pair.First, "Paired application output candidate", Confidence.Medium,
-                        "Application RV32 analysis", evidence, false);
-                    AddFinding(result, pair.Second, "Paired application output candidate", Confidence.Medium,
-                        "Application RV32 analysis", evidence, false);
+                        "; target semantics not verified as GPIO";
+                    AddFinding(result, pair.First, "Generic paired call-pattern candidate; role unresolved", Confidence.Low,
+                        "Application RV32 analysis", evidence, true);
+                    AddFinding(result, pair.Second, "Generic paired call-pattern candidate; role unresolved", Confidence.Low,
+                        "Application RV32 analysis", evidence, true);
                 }
             }
+            if (digitalOutputs.Count != 0)
+                result.Notes.Add("Generic recurrent-call patterns are retained only as LOW-confidence research clues because the same patterns occur in SDK and module firmware without corresponding device I/O.");
 
             if (markers.Contains("persistent output sort"))
                 result.Notes.Add("A persistent output-order table (KEY_SORT) exists in the application; its logical colour order is reported as unresolved unless a verified family fingerprint matches.");
