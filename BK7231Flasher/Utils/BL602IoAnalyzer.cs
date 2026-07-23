@@ -331,7 +331,7 @@ namespace BK7231Flasher
                 if (nodes.ContainsKey("/config_gpio"))
                 {
                     hasStrongProductDtb = true;
-                    ExtractConfigGpioFindings(result, nodes, options.UnusedPinSentinel, displayName);
+                    ExtractConfigGpioFindings(result, nodes, options.UnusedPinSentinel);
                 }
 
                 if (ExtractVerifiedLightingFindings(result, nodes))
@@ -691,11 +691,8 @@ namespace BK7231Flasher
         private static void ExtractConfigGpioFindings(
             AnalysisResult result,
             Dictionary<string, Dictionary<string, DtbProperty>> nodes,
-            int unusedSentinel,
-            string imageName)
+            int unusedSentinel)
         {
-            int? channelHint = HintedChannelCount(imageName);
-
             int? wifiPin = ScalarPin(PropertyValue(nodes, "/config_gpio", "wifi_led_pin"), unusedSentinel);
             if (wifiPin.HasValue)
             {
@@ -715,17 +712,6 @@ namespace BK7231Flasher
                     int? pin = ScalarPin(pair.Value.Value, unusedSentinel);
                     if (!pin.HasValue)
                         continue;
-
-                    if (channelHint.HasValue && channel >= channelHint.Value)
-                    {
-                        AddFinding(result, pin.Value,
-                            "Configured family output channel " + (channel + 1).ToString(CultureInfo.InvariantCulture) + " (possibly unpopulated)",
-                            Confidence.Medium,
-                            "DTB /config_gpio/config_channel",
-                            pair.Key + "; filename suggests " + channelHint.Value.ToString(CultureInfo.InvariantCulture) + " channel(s)",
-                            false);
-                        continue;
-                    }
 
                     retainedChannels.Add(channel);
                     AddFinding(result, pin.Value,
@@ -759,8 +745,8 @@ namespace BK7231Flasher
                 }
             }
 
-            ExtractLedGroup(result, nodes, "/config_gpio/config_led", "led", "Indicator LED", unusedSentinel, channelHint, false);
-            ExtractLedGroup(result, nodes, "/config_gpio/config_channel_led", "channel", "Channel indicator LED", unusedSentinel, channelHint, true);
+            ExtractLedGroup(result, nodes, "/config_gpio/config_led", "led", "Indicator LED", unusedSentinel, false);
+            ExtractLedGroup(result, nodes, "/config_gpio/config_channel_led", "channel", "Channel indicator LED", unusedSentinel, true);
 
             AddNamedPin(result, nodes, "/config_gpio", "cf_pin", unusedSentinel,
                 "BL0937 CF metering input", Confidence.VeryHigh, "DTB /config_gpio metering");
@@ -809,9 +795,6 @@ namespace BK7231Flasher
                 "Firmware log UART TX", Confidence.High, "DTB /config_gpio/config_log");
             AddNamedPin(result, nodes, "/config_gpio/config_log", "log_rx_pin", unusedSentinel,
                 "Firmware log UART RX", Confidence.High, "DTB /config_gpio/config_log");
-
-            if (channelHint.HasValue)
-                result.Notes.Add("An explicit " + channelHint.Value.ToString(CultureInfo.InvariantCulture) + "-channel hint was taken from the filename; higher family channels remain visible as medium-confidence clues.");
         }
 
         private static void ExtractLedGroup(
@@ -821,7 +804,6 @@ namespace BK7231Flasher
             string prefix,
             string description,
             int unusedSentinel,
-            int? channelHint,
             bool channelLed)
         {
             if (!nodes.TryGetValue(path, out Dictionary<string, DtbProperty> properties))
@@ -836,16 +818,6 @@ namespace BK7231Flasher
                 int? pin = ScalarPin(pair.Value.Value, unusedSentinel);
                 if (!pin.HasValue)
                     continue;
-                if (channelHint.HasValue && channelLed && index >= channelHint.Value)
-                {
-                    AddFinding(result, pin.Value,
-                        "Configured family channel indicator " + (index + 1).ToString(CultureInfo.InvariantCulture) + " (possibly unpopulated)",
-                        Confidence.Medium,
-                        path,
-                        pair.Key + "; filename channel-count hint",
-                        false);
-                    continue;
-                }
                 AddFinding(result, pin.Value,
                     description + " " + (index + 1).ToString(CultureInfo.InvariantCulture),
                     Confidence.High,
@@ -1038,23 +1010,6 @@ namespace BK7231Flasher
             if (value is int signedValue)
                 return signedValue.ToString(CultureInfo.InvariantCulture);
             return value.ToString();
-        }
-
-        private static int? HintedChannelCount(string imageName)
-        {
-            string fileName = Path.GetFileName(imageName ?? string.Empty);
-            string[] patterns =
-            {
-                @"(?i)(?<!\d)([1-4])\s*[-_ ]?CH(?![A-Z])",
-                @"(?i)(?<!\d)([1-4])\s*[-_ ]?G(?:ANG)?(?![A-Z])",
-            };
-            foreach (string pattern in patterns)
-            {
-                Match match = Regex.Match(fileName, pattern, RegexOptions.CultureInvariant);
-                if (match.Success)
-                    return int.Parse(match.Groups[1].Value, CultureInfo.InvariantCulture);
-            }
-            return null;
         }
 
         private static bool SequenceEqual(List<int> values, params int[] expected)
