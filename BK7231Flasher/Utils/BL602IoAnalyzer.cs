@@ -70,6 +70,7 @@ namespace BK7231Flasher
             public List<string> ProductIds { get; } = new List<string>();
             public List<string> ApplicationMarkers { get; } = new List<string>();
             public List<Finding> Findings { get; } = new List<Finding>();
+            public List<string> Diagnostics { get; } = new List<string>();
             public List<string> Notes { get; } = new List<string>();
             public int ApplicationScanStart { get; set; }
             public int ApplicationScanEnd { get; set; }
@@ -77,7 +78,7 @@ namespace BK7231Flasher
 
             public bool FoundAnyDtb => Dtbs.Count != 0;
 
-            public string ToPlainText(bool includeLowConfidence)
+            public string ToPlainText(bool includeDiagnostics)
             {
                 StringBuilder builder = new StringBuilder();
                 builder.AppendLine("BL602 I/O findings");
@@ -122,7 +123,6 @@ namespace BK7231Flasher
                 }
 
                 List<Finding> selected = Findings
-                    .Where(item => includeLowConfidence || item.ConfidenceLevel != Confidence.Low)
                     .OrderBy(item => item.Pin)
                     .ThenByDescending(item => item.ConfidenceLevel)
                     .ThenBy(item => item.Function, StringComparer.OrdinalIgnoreCase)
@@ -137,7 +137,7 @@ namespace BK7231Flasher
 
                 if (selected.Count == 0)
                 {
-                    builder.AppendLine("No reportable I/O findings at the selected confidence level.");
+                    builder.AppendLine("No reportable I/O assignments were found.");
                 }
                 else
                 {
@@ -151,13 +151,31 @@ namespace BK7231Flasher
                     }
                 }
 
+                List<string> diagnostics = Diagnostics.Distinct(StringComparer.Ordinal).ToList();
+                if (diagnostics.Count != 0)
+                {
+                    builder.AppendLine();
+                    if (includeDiagnostics)
+                    {
+                        builder.AppendLine("Diagnostics (not I/O assignments)");
+                        builder.AppendLine(new string('-', 78));
+                        foreach (string diagnostic in diagnostics)
+                            builder.AppendLine("- " + diagnostic);
+                    }
+                    else
+                    {
+                        builder.AppendLine("Diagnostics hidden: " + diagnostics.Count.ToString(CultureInfo.InvariantCulture) +
+                            " item(s). Enable \"Show diagnostics\" to inspect non-assignment firmware clues.");
+                    }
+                }
+
                 builder.AppendLine();
                 builder.AppendLine("Interpretation notes");
                 builder.AppendLine(new string('-', 78));
                 builder.AppendLine("- No active-high/active-low electrical level is inferred.");
                 builder.AppendLine("- No OpenBeken template is generated; this report is intentionally an I/O evidence table.");
                 builder.AppendLine("- Repeated GPIO rows mean independent evidence or competing interpretations were found.");
-                builder.AppendLine("- LOW findings are SDK/peripheral clues and may be generic rather than product wiring.");
+                builder.AppendLine("- Confidence applies only to I/O assignments; diagnostics are excluded from weighting.");
                 foreach (string note in Notes.Distinct())
                     builder.AppendLine("- " + note);
 
@@ -359,6 +377,7 @@ namespace BK7231Flasher
                 AnalyzeApplication(data, headers, productIds, markers, options.DeepApplicationScan, result);
 
             NormalizeFindings(result);
+            NormalizeDiagnostics(result);
             if (!result.FoundAnyDtb)
                 result.Notes.Add("No valid embedded DTB/FDT blob was found.");
             if (result.Findings.Count == 0)
@@ -886,16 +905,10 @@ namespace BK7231Flasher
             int unusedSentinel)
         {
             List<int> pins = IntList(PropertyValue(nodes, "/water_lamp", "pin_cfg"));
-            if (pins.Count == 0)
-                return;
-            foreach (int pin in pins.Distinct())
-            {
-                if (pin >= 0 && pin <= 63 && pin != unusedSentinel)
-                {
-                    AddFinding(result, pin, "Firmware lighting pin-use list; role unresolved", Confidence.Low,
-                        "DTB /water_lamp", "pin_cfg member", true);
-                }
-            }
+            List<int> validPins = pins.Where(pin => pin >= 0 && pin <= 63 && pin != unusedSentinel).Distinct().ToList();
+            if (validPins.Count != 0)
+                AddDiagnostic(result, "Firmware lighting metadata: /water_lamp pin_cfg contains [" +
+                    string.Join(",", validPins) + "]; roles and positional order are unresolved.");
             string output = AsString(PropertyValue(nodes, "/light_config", "output_chl"));
             if (!string.IsNullOrWhiteSpace(output))
                 result.Notes.Add("light_config output_chl=" + output + "; water_lamp pin_cfg is not treated as a positional output map without a verified fingerprint.");
@@ -919,7 +932,8 @@ namespace BK7231Flasher
                 string function = "Generic SDK " + feature + " declaration";
                 string evidence = node.Key + (string.IsNullOrWhiteSpace(mode) ? string.Empty : "; mode=" + mode) +
                     (string.IsNullOrWhiteSpace(status) ? string.Empty : "; status=" + status);
-                AddFinding(result, pin.Value, function, Confidence.Low, "Generic DTB /gpio", evidence, true);
+                AddDiagnostic(result, "Generic DTB /gpio: " + function + " uses pin=" +
+                    pin.Value.ToString(CultureInfo.InvariantCulture) + "; " + evidence + "; not counted as product wiring.");
             }
         }
 
@@ -952,12 +966,10 @@ namespace BK7231Flasher
                     int? pin = ScalarPin(property.Value.Value, unusedSentinel);
                     if (!pin.HasValue)
                         continue;
-                    AddFinding(result, pin.Value,
-                        family + " " + property.Key.ToUpperInvariant() + " DTB declaration",
-                        Confidence.Low,
-                        "Generic DTB peripheral",
-                        node.Key + ":" + property.Key,
-                        true);
+                    AddDiagnostic(result, "Generic DTB peripheral: " + family + " " +
+                        property.Key.ToUpperInvariant() + " declares pin=" +
+                        pin.Value.ToString(CultureInfo.InvariantCulture) + " at " +
+                        node.Key + ":" + property.Key + "; not counted as product wiring.");
                 }
             }
 
@@ -974,12 +986,9 @@ namespace BK7231Flasher
                     if (!pin.HasValue)
                         continue;
                     object idValue = GetProperty(node.Value, "id");
-                    AddFinding(result, pin.Value,
-                        "SDK PWM peripheral declaration",
-                        Confidence.Low,
-                        "Generic DTB /pwm",
-                        node.Key + "; id=" + FormatScalar(idValue),
-                        true);
+                    AddDiagnostic(result, "Generic DTB /pwm: " + node.Key + " declares pin=" +
+                        pin.Value.ToString(CultureInfo.InvariantCulture) + "; id=" +
+                        FormatScalar(idValue) + "; not counted as product wiring.");
                 }
             }
         }
@@ -996,7 +1005,9 @@ namespace BK7231Flasher
                 return;
             int? pin = ScalarPin(PropertyValue(nodes, path, "pin"), unusedSentinel);
             if (pin.HasValue)
-                AddFinding(result, pin.Value, function, Confidence.Low, "Generic DTB peripheral", path, true);
+                AddDiagnostic(result, "Generic DTB peripheral: " + function + " uses pin=" +
+                    pin.Value.ToString(CultureInfo.InvariantCulture) + " at " + path +
+                    "; not counted as product wiring.");
         }
 
         private static object GetProperty(Dictionary<string, DtbProperty> properties, string name)
@@ -1788,42 +1799,28 @@ namespace BK7231Flasher
                       markers.Contains("RGB controller framework") || markers.Contains("SPI lighting") ||
                       markers.Contains("CHT8315 sensor")))
                     continue;
-                foreach (int pin in tuple.Values)
-                {
-                    AddFinding(result, pin,
-                        "Compact application pin tuple member; role unresolved",
-                        Confidence.Low,
-                        "Application RV32 analysis",
-                        "tuple [" + string.Join(",", tuple.Values) + "] near 0x" + tuple.InstructionOffsets[0].ToString("X", CultureInfo.InvariantCulture),
-                        true);
-                }
+                AddDiagnostic(result, "Application tuple: small integer sequence [" +
+                    string.Join(",", tuple.Values) + "] near 0x" +
+                    tuple.InstructionOffsets[0].ToString("X", CultureInfo.InvariantCulture) +
+                    "; values are not treated as GPIO assignments.");
             }
 
             foreach (DigitalOutputCandidate candidate in digitalOutputs.Take(8))
             {
-                foreach (int pin in candidate.Pins)
-                {
-                    AddFinding(result, pin,
-                        "Generic application call-pattern candidate; role unresolved",
-                        Confidence.Low,
-                        "Application RV32 analysis",
-                        "recurrent calls to target 0x" + candidate.Target.ToString("X", CultureInfo.InvariantCulture) +
-                        "; " + candidate.CallCount.ToString(CultureInfo.InvariantCulture) + " calls; target semantics not verified as GPIO",
-                        true);
-                }
-                foreach (PinPairCount pair in candidate.ComplementaryPairs.Where(item => item.Count >= 2).Take(4))
-                {
-                    string evidence = "paired calls involving GPIO" + pair.First.ToString(CultureInfo.InvariantCulture) +
-                        " and GPIO" + pair.Second.ToString(CultureInfo.InvariantCulture) +
-                        "; target semantics not verified as GPIO";
-                    AddFinding(result, pair.First, "Generic paired call-pattern candidate; role unresolved", Confidence.Low,
-                        "Application RV32 analysis", evidence, true);
-                    AddFinding(result, pair.Second, "Generic paired call-pattern candidate; role unresolved", Confidence.Low,
-                        "Application RV32 analysis", evidence, true);
-                }
+                List<string> pairs = candidate.ComplementaryPairs
+                    .Where(item => item.Count >= 2)
+                    .Take(4)
+                    .Select(item => item.First.ToString(CultureInfo.InvariantCulture) + "/" +
+                        item.Second.ToString(CultureInfo.InvariantCulture) + " x" +
+                        item.Count.ToString(CultureInfo.InvariantCulture))
+                    .ToList();
+                AddDiagnostic(result, "Application call pattern: target 0x" +
+                    candidate.Target.ToString("X", CultureInfo.InvariantCulture) +
+                    " receives recurring small first-argument values [" + string.Join(",", candidate.Pins) +
+                    "] across " + candidate.CallCount.ToString(CultureInfo.InvariantCulture) + " calls" +
+                    (pairs.Count == 0 ? string.Empty : "; nearby opposite-value pairs [" + string.Join(", ", pairs) + "]") +
+                    "; callee and argument semantics are unverified.");
             }
-            if (digitalOutputs.Count != 0)
-                result.Notes.Add("Generic recurrent-call patterns are retained only as LOW-confidence research clues because the same patterns occur in SDK and module firmware without corresponding device I/O.");
 
             if (markers.Contains("persistent output sort"))
                 result.Notes.Add("A persistent output-order table (KEY_SORT) exists in the application; its logical colour order is reported as unresolved unless a verified family fingerprint matches.");
@@ -1853,6 +1850,19 @@ namespace BK7231Flasher
                 Evidence = evidence ?? string.Empty,
                 IsGenericClue = generic,
             });
+        }
+
+        private static void AddDiagnostic(AnalysisResult result, string text)
+        {
+            if (!string.IsNullOrWhiteSpace(text))
+                result.Diagnostics.Add(text);
+        }
+
+        private static void NormalizeDiagnostics(AnalysisResult result)
+        {
+            List<string> normalized = result.Diagnostics.Distinct(StringComparer.Ordinal).ToList();
+            result.Diagnostics.Clear();
+            result.Diagnostics.AddRange(normalized);
         }
 
         private static void NormalizeFindings(AnalysisResult result)

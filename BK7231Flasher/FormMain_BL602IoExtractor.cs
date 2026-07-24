@@ -13,7 +13,7 @@ namespace BK7231Flasher
         private Button buttonBl602IoOpen;
         private Button buttonBl602IoCopy;
         private Button buttonBl602IoSave;
-        private CheckBox checkBoxBl602IoShowLow;
+        private CheckBox checkBoxBl602IoShowDiagnostics;
         private CheckBox checkBoxBl602IoDeepScan;
         private Label labelBl602IoStatus;
         private BL602IoAnalyzer.AnalysisResult lastBl602IoResult;
@@ -50,7 +50,7 @@ namespace BK7231Flasher
 
             buttonBl602IoCopy = new Button
             {
-                Text = "Copy table",
+                Text = "Copy report",
                 AutoSize = true,
                 Height = 26,
                 Enabled = false,
@@ -66,14 +66,14 @@ namespace BK7231Flasher
             };
             buttonBl602IoSave.Click += ButtonBl602IoSave_Click;
 
-            checkBoxBl602IoShowLow = new CheckBox
+            checkBoxBl602IoShowDiagnostics = new CheckBox
             {
-                Text = "Show low-confidence SDK/peripheral clues",
+                Text = "Show diagnostics (not I/O assignments)",
                 AutoSize = true,
                 Checked = false,
                 Padding = new Padding(8, 5, 0, 0),
             };
-            checkBoxBl602IoShowLow.CheckedChanged += CheckBoxBl602IoShowLow_CheckedChanged;
+            checkBoxBl602IoShowDiagnostics.CheckedChanged += CheckBoxBl602IoShowDiagnostics_CheckedChanged;
 
             checkBoxBl602IoDeepScan = new CheckBox
             {
@@ -86,7 +86,7 @@ namespace BK7231Flasher
             commandBar.Controls.Add(buttonBl602IoOpen);
             commandBar.Controls.Add(buttonBl602IoCopy);
             commandBar.Controls.Add(buttonBl602IoSave);
-            commandBar.Controls.Add(checkBoxBl602IoShowLow);
+            commandBar.Controls.Add(checkBoxBl602IoShowDiagnostics);
             commandBar.Controls.Add(checkBoxBl602IoDeepScan);
 
             labelBl602IoStatus = new Label
@@ -94,7 +94,7 @@ namespace BK7231Flasher
                 Dock = DockStyle.Top,
                 Height = 28,
                 TextAlign = ContentAlignment.MiddleLeft,
-                Text = "Drop a BL602 full flash dump here, or open one. Output is a plain-text I/O evidence table; no polarity or OBK template is inferred.",
+                Text = "Drop a BL602 full flash dump here, or open one. I/O assignments and optional non-assignment diagnostics are reported separately.",
                 AutoEllipsis = true,
             };
 
@@ -176,7 +176,7 @@ namespace BK7231Flasher
             }
         }
 
-        private void CheckBoxBl602IoShowLow_CheckedChanged(object sender, EventArgs e)
+        private void CheckBoxBl602IoShowDiagnostics_CheckedChanged(object sender, EventArgs e)
         {
             RenderLastBl602IoResult();
         }
@@ -208,10 +208,11 @@ namespace BK7231Flasher
                 lastBl602IoResult = result;
                 RenderLastBl602IoResult();
                 labelBl602IoStatus.Text = string.Format(
-                    "Analysed {0}: {1} DTB(s), {2} I/O finding row(s).",
+                    "Analysed {0}: {1} DTB(s), {2} I/O finding row(s), {3} diagnostic item(s).",
                     Path.GetFileName(fileName),
                     result.Dtbs.Count,
-                    result.Findings.Count);
+                    result.Findings.Count,
+                    result.Diagnostics.Count);
             }
             catch (Exception ex)
             {
@@ -228,7 +229,7 @@ namespace BK7231Flasher
         {
             if (lastBl602IoResult == null)
                 return;
-            textBoxBl602IoOutput.Text = lastBl602IoResult.ToPlainText(checkBoxBl602IoShowLow.Checked);
+            textBoxBl602IoOutput.Text = lastBl602IoResult.ToPlainText(checkBoxBl602IoShowDiagnostics.Checked);
             buttonBl602IoCopy.Enabled = textBoxBl602IoOutput.TextLength != 0;
             buttonBl602IoSave.Enabled = textBoxBl602IoOutput.TextLength != 0;
         }
@@ -238,7 +239,7 @@ namespace BK7231Flasher
             buttonBl602IoOpen.Enabled = !busy;
             buttonBl602IoCopy.Enabled = !busy && lastBl602IoResult != null;
             buttonBl602IoSave.Enabled = !busy && lastBl602IoResult != null;
-            checkBoxBl602IoShowLow.Enabled = !busy;
+            checkBoxBl602IoShowDiagnostics.Enabled = !busy;
             checkBoxBl602IoDeepScan.Enabled = !busy;
             labelBl602IoStatus.Text = status ?? string.Empty;
             UseWaitCursor = busy;
