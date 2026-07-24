@@ -132,12 +132,12 @@ namespace BK7231Flasher
                 builder.AppendLine();
                 builder.AppendLine("I/O table");
                 builder.AppendLine(new string('-', 130));
-                builder.AppendLine(Fixed("GPIO", 7) + Fixed("Likely function", 40) + Fixed("Confidence", 13) + Fixed("Source", 34) + "Evidence");
+                builder.AppendLine(Fixed("GPIO", 7) + Fixed("Observed use / likely function", 40) + Fixed("Confidence", 13) + Fixed("Source", 34) + "Evidence");
                 builder.AppendLine(new string('-', 130));
 
                 if (selected.Count == 0)
                 {
-                    builder.AppendLine("No reportable I/O assignments were found.");
+                    builder.AppendLine("No reportable I/O findings were found.");
                 }
                 else
                 {
@@ -175,7 +175,7 @@ namespace BK7231Flasher
                 builder.AppendLine("- No active-high/active-low electrical level is inferred.");
                 builder.AppendLine("- No OpenBeken template is generated; this report is intentionally an I/O evidence table.");
                 builder.AppendLine("- Repeated GPIO rows mean independent evidence or competing interpretations were found.");
-                builder.AppendLine("- Confidence applies only to I/O assignments; diagnostics are excluded from weighting.");
+                builder.AppendLine("- Confidence applies to the claim in each I/O row; diagnostics are excluded from weighting.");
                 foreach (string note in Notes.Distinct())
                     builder.AppendLine("- " + note);
 
@@ -236,6 +236,7 @@ namespace BK7231Flasher
             public bool Control;
             public bool Call;
             public int? StoreWidth;
+            public string BranchKind;
         }
 
         private sealed class CallRecord
@@ -244,6 +245,31 @@ namespace BK7231Flasher
             public int Target;
             public int?[] Args;
             public int InstructionIndex;
+        }
+
+        private sealed class ConfigTraceState
+        {
+            public int InstructionIndex;
+            public long?[] Registers = new long?[32];
+            public Dictionary<long, int> ObjectModes = new Dictionary<long, int>();
+            public int Steps;
+
+            public ConfigTraceState Clone()
+            {
+                return new ConfigTraceState
+                {
+                    InstructionIndex = InstructionIndex,
+                    Registers = (long?[])Registers.Clone(),
+                    ObjectModes = new Dictionary<long, int>(ObjectModes),
+                    Steps = Steps,
+                };
+            }
+        }
+
+        private sealed class ConfigApiProof
+        {
+            public Dictionary<int, string> Directions = new Dictionary<int, string>();
+            public string Method;
         }
 
         private sealed class DirectPwmCandidate
@@ -316,7 +342,6 @@ namespace BK7231Flasher
             };
 
             List<DtbHeader> headers = FindDtbs(data);
-            bool hasStrongProductDtb = false;
             foreach (DtbHeader header in headers)
             {
                 Dictionary<string, Dictionary<string, DtbProperty>> nodes;
@@ -348,15 +373,13 @@ namespace BK7231Flasher
 
                 if (nodes.ContainsKey("/config_gpio"))
                 {
-                    hasStrongProductDtb = true;
                     ExtractConfigGpioFindings(result, nodes, options.UnusedPinSentinel);
                     const string configGpioNote = "A /config_gpio pin is a firmware assignment, not proof that the corresponding component is populated on this PCB; some product-family dumps retain unused variant slots.";
                     if (!result.Notes.Contains(configGpioNote))
                         result.Notes.Add(configGpioNote);
                 }
 
-                if (ExtractVerifiedLightingFindings(result, nodes))
-                    hasStrongProductDtb = true;
+                ExtractVerifiedLightingFindings(result, nodes);
 
                 ExtractLightingPinUseClues(result, nodes, options.UnusedPinSentinel);
                 ExtractGenericGpioClues(result, nodes, options.UnusedPinSentinel);
@@ -369,12 +392,7 @@ namespace BK7231Flasher
             List<string> markers = DiscoverMarkers(data);
             result.ApplicationMarkers.AddRange(markers);
 
-            bool shouldDecodeApplication = !hasStrongProductDtb || productIds.Count != 0 ||
-                markers.Contains("direct PWM lighting") || markers.Contains("metering framework") ||
-                markers.Contains("RGB controller framework") || markers.Contains("SPI lighting");
-
-            if (shouldDecodeApplication)
-                AnalyzeApplication(data, headers, productIds, markers, options.DeepApplicationScan, result);
+            AnalyzeApplication(data, headers, productIds, markers, options.DeepApplicationScan, result);
 
             NormalizeFindings(result);
             NormalizeDiagnostics(result);
@@ -1126,7 +1144,18 @@ namespace BK7231Flasher
             int funct3 = (halfword >> 13) & 0x7;
             RvInstruction instruction = new RvInstruction { Offset = offset, Size = 2, Raw = halfword };
 
-            if (quadrant == 1 && funct3 == 0)
+            if (quadrant == 0 && funct3 == 0 && ((halfword >> 5) & 0xFF) != 0)
+            {
+                instruction.Kind = "addi";
+                instruction.Rd = 8 + ((halfword >> 2) & 0x7);
+                instruction.Rs1 = 2;
+                instruction.Imm =
+                    (((halfword >> 7) & 0xF) << 6) |
+                    (((halfword >> 11) & 0x3) << 4) |
+                    (((halfword >> 5) & 1) << 3) |
+                    (((halfword >> 6) & 1) << 2);
+            }
+            else if (quadrant == 1 && funct3 == 0)
             {
                 int rd = (halfword >> 7) & 0x1F;
                 uint immediateBits = (uint)((((halfword >> 12) & 1) << 5) | ((halfword >> 2) & 0x1F));
@@ -1191,6 +1220,24 @@ namespace BK7231Flasher
                     instruction.Call = rd != 0;
                 }
             }
+            else if (quadrant == 2 && funct3 == 0)
+            {
+                int rd = (halfword >> 7) & 0x1F;
+                uint immediateBits = (uint)((((halfword >> 12) & 1) << 5) | ((halfword >> 2) & 0x1F));
+                instruction.Kind = "slli";
+                instruction.Rd = rd;
+                instruction.Rs1 = rd;
+                instruction.Imm = (int)immediateBits;
+            }
+            else if (quadrant == 1 && funct3 == 4 && ((halfword >> 10) & 0x3) == 2)
+            {
+                int rd = 8 + ((halfword >> 7) & 0x7);
+                uint immediateBits = (uint)((((halfword >> 12) & 1) << 5) | ((halfword >> 2) & 0x1F));
+                instruction.Kind = "andi";
+                instruction.Rd = rd;
+                instruction.Rs1 = rd;
+                instruction.Imm = SignExtend(immediateBits, 6);
+            }
             else if (quadrant == 1 && (funct3 == 1 || funct3 == 5))
             {
                 uint immediateBits = (uint)(
@@ -1211,19 +1258,56 @@ namespace BK7231Flasher
             else if (quadrant == 1 && (funct3 == 6 || funct3 == 7))
             {
                 instruction.Kind = "branch";
+                instruction.Rs1 = 8 + ((halfword >> 7) & 0x7);
+                instruction.Rs2 = 0;
+                instruction.BranchKind = funct3 == 6 ? "eq" : "ne";
+                uint immediateBits = (uint)(
+                    (((halfword >> 12) & 1) << 8) |
+                    (((halfword >> 10) & 0x3) << 3) |
+                    (((halfword >> 5) & 0x3) << 6) |
+                    (((halfword >> 3) & 0x3) << 1) |
+                    (((halfword >> 2) & 1) << 5));
+                instruction.Target = offset + SignExtend(immediateBits, 9);
                 instruction.Control = true;
             }
             else
             {
-                if (quadrant == 0 && (funct3 == 2 || funct3 == 3))
+                if (quadrant == 0 && funct3 == 2)
                 {
                     instruction.Kind = "load";
                     instruction.Rd = 8 + ((halfword >> 2) & 0x7);
+                    instruction.Rs1 = 8 + ((halfword >> 7) & 0x7);
+                    instruction.Imm = (((halfword >> 10) & 0x7) << 3) |
+                        (((halfword >> 6) & 1) << 2) |
+                        (((halfword >> 5) & 1) << 6);
                 }
-                else if (quadrant == 2 && (funct3 == 2 || funct3 == 3))
+                else if (quadrant == 2 && funct3 == 2)
                 {
                     instruction.Kind = "load";
                     instruction.Rd = (halfword >> 7) & 0x1F;
+                    instruction.Rs1 = 2;
+                    instruction.Imm = (((halfword >> 12) & 1) << 5) |
+                        (((halfword >> 4) & 0x7) << 2) |
+                        (((halfword >> 2) & 0x3) << 6);
+                }
+                else if (quadrant == 0 && funct3 == 6)
+                {
+                    instruction.Kind = "store";
+                    instruction.Rs1 = 8 + ((halfword >> 7) & 0x7);
+                    instruction.Rs2 = 8 + ((halfword >> 2) & 0x7);
+                    instruction.Imm = (((halfword >> 10) & 0x7) << 3) |
+                        (((halfword >> 6) & 1) << 2) |
+                        (((halfword >> 5) & 1) << 6);
+                    instruction.StoreWidth = 4;
+                }
+                else if (quadrant == 2 && funct3 == 6)
+                {
+                    instruction.Kind = "store";
+                    instruction.Rs1 = 2;
+                    instruction.Rs2 = (halfword >> 2) & 0x1F;
+                    instruction.Imm = (((halfword >> 9) & 0xF) << 2) |
+                        (((halfword >> 7) & 0x3) << 6);
+                    instruction.StoreWidth = 4;
                 }
             }
             return instruction;
@@ -1266,7 +1350,7 @@ namespace BK7231Flasher
                     (((word >> 20) & 1) << 11) |
                     (((word >> 21) & 0x3FF) << 1);
                 int immediate = SignExtend(immediateBits, 21);
-                instruction.Kind = "jal";
+                instruction.Kind = rd == 0 ? "j" : "jal";
                 instruction.Rd = rd;
                 instruction.Target = offset + immediate;
                 instruction.Control = true;
@@ -1286,6 +1370,18 @@ namespace BK7231Flasher
                 instruction.Kind = "branch";
                 instruction.Rs1 = rs1;
                 instruction.Rs2 = rs2;
+                instruction.BranchKind = funct3 == 0 ? "eq" :
+                    funct3 == 1 ? "ne" :
+                    funct3 == 4 ? "lt" :
+                    funct3 == 5 ? "ge" :
+                    funct3 == 6 ? "ltu" :
+                    funct3 == 7 ? "geu" : null;
+                uint immediateBits =
+                    (((word >> 31) & 1) << 12) |
+                    (((word >> 7) & 1) << 11) |
+                    (((word >> 25) & 0x3F) << 5) |
+                    (((word >> 8) & 0xF) << 1);
+                instruction.Target = offset + SignExtend(immediateBits, 13);
                 instruction.Control = true;
             }
             else if (opcode == 0x23)
@@ -1304,6 +1400,28 @@ namespace BK7231Flasher
                 instruction.Kind = "load";
                 instruction.Rd = rd;
                 instruction.Rs1 = rs1;
+                instruction.Imm = SignExtend((word >> 20) & 0xFFF, 12);
+            }
+            else if (opcode == 0x13 && funct3 == 7)
+            {
+                instruction.Kind = "andi";
+                instruction.Rd = rd;
+                instruction.Rs1 = rs1;
+                instruction.Imm = SignExtend((word >> 20) & 0xFFF, 12);
+            }
+            else if (opcode == 0x13 && funct3 == 1)
+            {
+                instruction.Kind = "slli";
+                instruction.Rd = rd;
+                instruction.Rs1 = rs1;
+                instruction.Imm = (int)((word >> 20) & 0x1F);
+            }
+            else if (opcode == 0x33 && funct3 == 1)
+            {
+                instruction.Kind = "sll";
+                instruction.Rd = rd;
+                instruction.Rs1 = rs1;
+                instruction.Rs2 = rs2;
             }
             else if (opcode == 0x33 || opcode == 0x1B || opcode == 0x73)
             {
@@ -1424,6 +1542,1120 @@ namespace BK7231Flasher
                 });
             }
             return calls;
+        }
+
+        private static List<CallRecord> CollectDirectTransfers(List<RvInstruction> instructions)
+        {
+            List<CallRecord> transfers = new List<CallRecord>();
+            if (instructions.Count == 0)
+                return transfers;
+            int start = instructions[0].Offset;
+            int end = instructions[instructions.Count - 1].Offset + instructions[instructions.Count - 1].Size;
+            for (int index = 0; index < instructions.Count; index++)
+            {
+                RvInstruction instruction = instructions[index];
+                bool isFarTail = instruction.Kind == "j" && instruction.Target.HasValue &&
+                    Math.Abs((long)instruction.Target.Value - instruction.Offset) > 0x100;
+                if ((!instruction.Call && !isFarTail) || !instruction.Target.HasValue ||
+                    instruction.Target.Value < start || instruction.Target.Value >= end)
+                {
+                    continue;
+                }
+                transfers.Add(new CallRecord
+                {
+                    Offset = instruction.Offset,
+                    Target = instruction.Target.Value,
+                    Args = RecoverCallArguments(instructions, index),
+                    InstructionIndex = index,
+                });
+            }
+            return transfers;
+        }
+
+        private static int FunctionEntryForOffset(List<int> entries, int offset)
+        {
+            int position = entries.BinarySearch(offset);
+            if (position >= 0)
+                return entries[position];
+            position = ~position - 1;
+            return position >= 0 ? entries[position] : -1;
+        }
+
+        private static bool IsReturn(RvInstruction instruction)
+        {
+            return (instruction.Kind == "jr" && instruction.Rs1 == 1) ||
+                (instruction.Kind == "jalr" && instruction.Rd == 0 && instruction.Rs1 == 1);
+        }
+
+        private static HashSet<string> ClassifyGpioPrimitive(
+            List<RvInstruction> instructions,
+            int startIndex,
+            int endIndex)
+        {
+            // BL602 GLB GPIO input is at 0x40000180 and the read/modify/write
+            // output register is at 0x40000188.  Require pin-derived shifting
+            // as well as those hardware addresses so an SDK helper alone is
+            // not mistaken for an application assignment.
+            Dictionary<int, int> constants = new Dictionary<int, int> { [0] = 0 };
+            bool outputAddressConstructed = false;
+            bool inputBaseConstructed = false;
+            bool sawLoad = false;
+            bool sawStore = false;
+            bool inputOffsetLoad = false;
+            bool pinShift = false;
+
+            int limit = Math.Min(endIndex, startIndex + 80);
+            for (int index = startIndex; index < limit; index++)
+            {
+                RvInstruction instruction = instructions[index];
+                if (instruction.Kind == "load")
+                {
+                    sawLoad = true;
+                    inputOffsetLoad |= instruction.Imm == 0x180;
+                }
+                else if (instruction.Kind == "store")
+                {
+                    sawStore = true;
+                }
+
+                if (instruction.Kind == "sll" && (instruction.Rs1 == 10 || instruction.Rs2 == 10))
+                    pinShift = true;
+
+                if ((instruction.Kind == "li" || instruction.Kind == "lui") &&
+                    instruction.Rd.HasValue && instruction.Imm.HasValue)
+                {
+                    constants[instruction.Rd.Value] = instruction.Imm.Value;
+                }
+                else if (instruction.Kind == "addi" && instruction.Rd.HasValue &&
+                    instruction.Rs1.HasValue && instruction.Imm.HasValue &&
+                    constants.TryGetValue(instruction.Rs1.Value, out int addBase))
+                {
+                    constants[instruction.Rd.Value] = addBase + instruction.Imm.Value;
+                }
+                else if (instruction.Kind == "mv" && instruction.Rd.HasValue && instruction.Rs1.HasValue &&
+                    constants.TryGetValue(instruction.Rs1.Value, out int moved))
+                {
+                    constants[instruction.Rd.Value] = moved;
+                }
+                else if (instruction.Rd.HasValue && instruction.Rd.Value != 0)
+                {
+                    constants.Remove(instruction.Rd.Value);
+                }
+
+                outputAddressConstructed |= constants.Values.Contains(0x40000188);
+                inputBaseConstructed |= constants.Values.Contains(0x40000000);
+                if (IsReturn(instruction))
+                    break;
+            }
+
+            HashSet<string> kinds = new HashSet<string>(StringComparer.Ordinal);
+            if (outputAddressConstructed && sawLoad && sawStore && pinShift)
+                kinds.Add("write");
+            if (inputBaseConstructed && inputOffsetLoad && sawLoad && !sawStore && pinShift)
+                kinds.Add("read");
+            return kinds;
+        }
+
+        private static string ClassifyGpioConfigPrimitive(
+            List<RvInstruction> instructions,
+            int startIndex,
+            int endIndex)
+        {
+            // BL602's GLB_GPIO_Cfg_Type is a six-byte structure:
+            // pin, function, mode, pull, drive, Schmitt.  The SDK's input/output
+            // helpers build it on the stack with function=11 (SW GPIO),
+            // mode=0/1, drive=0 and Schmitt=1 before calling GLB_GPIO_Init.
+            Dictionary<int, int> constants = new Dictionary<int, int> { [0] = 0 };
+            HashSet<int> entryPinRegisters = new HashSet<int> { 10 };
+            Dictionary<int, byte> stackBytes = new Dictionary<int, byte>();
+            HashSet<int> pinOffsets = new HashSet<int>();
+            HashSet<int> pointerOffsets = new HashSet<int>();
+            HashSet<int> calledPointerOffsets = new HashSet<int>();
+
+            int limit = Math.Min(endIndex, startIndex + 96);
+            for (int index = startIndex; index < limit; index++)
+            {
+                RvInstruction instruction = instructions[index];
+                if (instruction.Kind == "store" && instruction.Rs1 == 2 &&
+                    instruction.Rs2.HasValue && instruction.Imm.HasValue &&
+                    instruction.StoreWidth.HasValue)
+                {
+                    int stackOffset = instruction.Imm.Value;
+                    if (entryPinRegisters.Contains(instruction.Rs2.Value) &&
+                        instruction.StoreWidth.Value == 1)
+                    {
+                        pinOffsets.Add(stackOffset);
+                    }
+                    else if (constants.TryGetValue(instruction.Rs2.Value, out int stored))
+                    {
+                        for (int byteIndex = 0; byteIndex < instruction.StoreWidth.Value; byteIndex++)
+                        {
+                            stackBytes[stackOffset + byteIndex] =
+                                (byte)((uint)stored >> (byteIndex * 8));
+                        }
+                    }
+                }
+
+                if (instruction.Call)
+                    calledPointerOffsets.UnionWith(pointerOffsets);
+
+                HashSet<int> nextPinRegisters = new HashSet<int>(entryPinRegisters);
+                if (instruction.Rd.HasValue && instruction.Rd.Value != 0)
+                    nextPinRegisters.Remove(instruction.Rd.Value);
+
+                if ((instruction.Kind == "li" || instruction.Kind == "lui") &&
+                    instruction.Rd.HasValue && instruction.Imm.HasValue)
+                {
+                    constants[instruction.Rd.Value] = instruction.Imm.Value;
+                }
+                else if (instruction.Kind == "addi" && instruction.Rd.HasValue &&
+                    instruction.Rs1.HasValue && instruction.Imm.HasValue)
+                {
+                    if (constants.TryGetValue(instruction.Rs1.Value, out int addBase))
+                        constants[instruction.Rd.Value] = addBase + instruction.Imm.Value;
+                    else
+                        constants.Remove(instruction.Rd.Value);
+
+                    if (entryPinRegisters.Contains(instruction.Rs1.Value) && instruction.Imm.Value == 0)
+                        nextPinRegisters.Add(instruction.Rd.Value);
+                    if (instruction.Rd.Value == 10 && instruction.Rs1.Value == 2)
+                        pointerOffsets.Add(instruction.Imm.Value);
+                }
+                else if (instruction.Kind == "mv" && instruction.Rd.HasValue && instruction.Rs1.HasValue)
+                {
+                    if (constants.TryGetValue(instruction.Rs1.Value, out int moved))
+                        constants[instruction.Rd.Value] = moved;
+                    else
+                        constants.Remove(instruction.Rd.Value);
+                    if (entryPinRegisters.Contains(instruction.Rs1.Value))
+                        nextPinRegisters.Add(instruction.Rd.Value);
+                }
+                else if (instruction.Rd.HasValue && instruction.Rd.Value != 0)
+                {
+                    constants.Remove(instruction.Rd.Value);
+                }
+                entryPinRegisters = nextPinRegisters;
+
+                if (IsReturn(instruction))
+                    break;
+            }
+
+            foreach (int baseOffset in pinOffsets)
+            {
+                if (!calledPointerOffsets.Contains(baseOffset) ||
+                    !stackBytes.TryGetValue(baseOffset + 1, out byte function) || function != 11 ||
+                    !stackBytes.TryGetValue(baseOffset + 2, out byte mode) || mode > 1 ||
+                    !stackBytes.TryGetValue(baseOffset + 4, out byte drive) || drive != 0 ||
+                    !stackBytes.TryGetValue(baseOffset + 5, out byte schmitt) || schmitt != 1)
+                {
+                    continue;
+                }
+                return mode == 0 ? "input-config" : "output-config";
+            }
+            return null;
+        }
+
+        private static bool BlockReachesConfigPrimitive(
+            List<RvInstruction> instructions,
+            Dictionary<int, int> instructionIndices,
+            int startOffset,
+            HashSet<int> primitives)
+        {
+            Queue<Tuple<int, int>> pending = new Queue<Tuple<int, int>>();
+            HashSet<int> visited = new HashSet<int>();
+            pending.Enqueue(Tuple.Create(startOffset, 0));
+            while (pending.Count != 0)
+            {
+                Tuple<int, int> item = pending.Dequeue();
+                if (item.Item2 > 24 || !instructionIndices.TryGetValue(item.Item1, out int index))
+                    continue;
+                int steps = item.Item2;
+                while (index < instructions.Count && steps++ <= 24)
+                {
+                    RvInstruction instruction = instructions[index];
+                    if (!visited.Add(instruction.Offset))
+                        break;
+                    if (instruction.Target.HasValue && primitives.Contains(instruction.Target.Value))
+                        return true;
+                    if (instruction.Kind == "branch" && instruction.Target.HasValue)
+                    {
+                        pending.Enqueue(Tuple.Create(instruction.Target.Value, steps));
+                    }
+                    else if (instruction.Kind == "j")
+                    {
+                        if (instruction.Target.HasValue)
+                            pending.Enqueue(Tuple.Create(instruction.Target.Value, steps));
+                        break;
+                    }
+                    else if (instruction.Kind == "jr" || IsReturn(instruction))
+                    {
+                        break;
+                    }
+                    index++;
+                }
+            }
+            return false;
+        }
+
+        private static Dictionary<uint, int> FindGpioConfigTables(
+            byte[] data,
+            int firmwareStart,
+            int firmwareEnd,
+            List<RvInstruction> instructions,
+            Dictionary<int, int> instructionIndices,
+            HashSet<int> inputPrimitives,
+            HashSet<int> outputPrimitives)
+        {
+            Dictionary<uint, int> tables = new Dictionary<uint, int>();
+            if (inputPrimitives.Count == 0 || outputPrimitives.Count == 0)
+                return tables;
+
+            for (int offset = (firmwareStart + 3) & ~3; offset + 24 <= firmwareEnd; offset += 4)
+            {
+                int[] targets = new int[6];
+                bool valid = true;
+                for (int entry = 0; entry < targets.Length; entry++)
+                {
+                    uint runtimeAddress = ReadLe32(data, offset + entry * 4) & ~1u;
+                    long relative = runtimeAddress - 0x23000000L;
+                    long fileOffset = firmwareStart + relative;
+                    if (relative < 0 || fileOffset < firmwareStart || fileOffset >= firmwareEnd)
+                    {
+                        valid = false;
+                        break;
+                    }
+                    targets[entry] = (int)fileOffset;
+                }
+                if (!valid)
+                    continue;
+
+                bool directionsMatch = true;
+                for (int entry = 0; entry < targets.Length; entry++)
+                {
+                    bool reachesInput = BlockReachesConfigPrimitive(
+                        instructions, instructionIndices, targets[entry], inputPrimitives);
+                    bool reachesOutput = BlockReachesConfigPrimitive(
+                        instructions, instructionIndices, targets[entry], outputPrimitives);
+                    bool expectedInput = entry < 3;
+                    if (reachesInput == reachesOutput || reachesInput != expectedInput)
+                    {
+                        directionsMatch = false;
+                        break;
+                    }
+                }
+                if (directionsMatch)
+                {
+                    uint runtimeTable = 0x23000000u + (uint)(offset - firmwareStart);
+                    tables[runtimeTable] = offset;
+                }
+            }
+            return tables;
+        }
+
+        private static HashSet<int> FindGpioConfigDispatchers(
+            List<RvInstruction> instructions,
+            List<int> entries,
+            Dictionary<int, int> instructionIndices,
+            ICollection<uint> runtimeTables)
+        {
+            HashSet<int> dispatchers = new HashSet<int>();
+            HashSet<int> tableAddresses = new HashSet<int>(runtimeTables.Select(item => unchecked((int)item)));
+            for (int entryPosition = 0; entryPosition < entries.Count; entryPosition++)
+            {
+                int entry = entries[entryPosition];
+                if (!instructionIndices.TryGetValue(entry, out int startIndex))
+                    continue;
+                int nextEntry = entryPosition + 1 < entries.Count
+                    ? entries[entryPosition + 1]
+                    : instructions[instructions.Count - 1].Offset + instructions[instructions.Count - 1].Size;
+                Dictionary<int, int> constants = new Dictionary<int, int> { [0] = 0 };
+                bool sawTableAddress = false;
+                bool sawIndirectJump = false;
+                for (int index = startIndex;
+                    index < instructions.Count && instructions[index].Offset < nextEntry && index < startIndex + 80;
+                    index++)
+                {
+                    RvInstruction instruction = instructions[index];
+                    if ((instruction.Kind == "li" || instruction.Kind == "lui") &&
+                        instruction.Rd.HasValue && instruction.Imm.HasValue)
+                    {
+                        constants[instruction.Rd.Value] = instruction.Imm.Value;
+                    }
+                    else if (instruction.Kind == "addi" && instruction.Rd.HasValue &&
+                        instruction.Rs1.HasValue && instruction.Imm.HasValue &&
+                        constants.TryGetValue(instruction.Rs1.Value, out int addBase))
+                    {
+                        constants[instruction.Rd.Value] = addBase + instruction.Imm.Value;
+                    }
+                    else if (instruction.Kind == "mv" && instruction.Rd.HasValue && instruction.Rs1.HasValue &&
+                        constants.TryGetValue(instruction.Rs1.Value, out int moved))
+                    {
+                        constants[instruction.Rd.Value] = moved;
+                    }
+                    else if (instruction.Rd.HasValue && instruction.Rd.Value != 0)
+                    {
+                        constants.Remove(instruction.Rd.Value);
+                    }
+
+                    sawTableAddress |= constants.Values.Any(tableAddresses.Contains);
+                    sawIndirectJump |= instruction.Kind == "jr" && instruction.Rs1 != 1;
+                }
+                if (sawTableAddress && sawIndirectJump)
+                    dispatchers.Add(entry);
+            }
+            return dispatchers;
+        }
+
+        private const long SymbolicTokenLimit = -0x10000000000L;
+
+        private static long MakeSymbolicToken(int offset, int register)
+        {
+            return long.MinValue / 2 + ((long)offset << 5) + register;
+        }
+
+        private static bool IsConcreteSymbol(long? value)
+        {
+            return value.HasValue && value.Value > SymbolicTokenLimit;
+        }
+
+        private static bool? EvaluateBranch(string branchKind, long? left, long? right)
+        {
+            if (!left.HasValue || !right.HasValue)
+                return null;
+            if (!IsConcreteSymbol(left) || !IsConcreteSymbol(right))
+            {
+                if (left.Value != right.Value)
+                    return null;
+                return branchKind == "eq" || branchKind == "ge" || branchKind == "geu";
+            }
+
+            long lhs = left.Value;
+            long rhs = right.Value;
+            if (branchKind == "eq") return lhs == rhs;
+            if (branchKind == "ne") return lhs != rhs;
+            if (branchKind == "lt") return lhs < rhs;
+            if (branchKind == "ge") return lhs >= rhs;
+            if (branchKind == "ltu") return (ulong)(uint)lhs < (ulong)(uint)rhs;
+            if (branchKind == "geu") return (ulong)(uint)lhs >= (ulong)(uint)rhs;
+            return null;
+        }
+
+        private static void ApplyCallClobber(ConfigTraceState state, int callOffset)
+        {
+            foreach (int register in new[] { 1, 5, 6, 7, 10, 11, 12, 13, 14, 15, 16, 17 })
+                state.Registers[register] = null;
+            state.Registers[10] = MakeSymbolicToken(callOffset, 10);
+            state.Registers[0] = 0;
+        }
+
+        private static HashSet<int> TraceConfigModes(
+            List<RvInstruction> instructions,
+            Dictionary<int, int> instructionIndices,
+            int startIndex,
+            int endOffset,
+            int dispatcher,
+            int directionArgument,
+            int pullArgument)
+        {
+            HashSet<int> modes = new HashSet<int>();
+            ConfigTraceState initial = new ConfigTraceState { InstructionIndex = startIndex };
+            initial.Registers[0] = 0;
+            initial.Registers[10] = MakeSymbolicToken(instructions[startIndex].Offset, 10);
+            initial.Registers[11] = directionArgument;
+            initial.Registers[12] = pullArgument;
+            Queue<ConfigTraceState> pending = new Queue<ConfigTraceState>();
+            HashSet<string> visited = new HashSet<string>(StringComparer.Ordinal);
+            pending.Enqueue(initial);
+
+            while (pending.Count != 0 && visited.Count < 512)
+            {
+                ConfigTraceState state = pending.Dequeue();
+                while (state.InstructionIndex < instructions.Count && state.Steps++ < 400)
+                {
+                    RvInstruction instruction = instructions[state.InstructionIndex];
+                    if (instruction.Offset >= endOffset)
+                        break;
+                    string stateKey = instruction.Offset.ToString(CultureInfo.InvariantCulture) + "|" +
+                        string.Join(",", state.Registers.Select(value => value.HasValue
+                            ? value.Value.ToString(CultureInfo.InvariantCulture)
+                            : "?")) + "|" +
+                        string.Join(",", state.ObjectModes.OrderBy(item => item.Key)
+                            .Select(item => item.Key.ToString(CultureInfo.InvariantCulture) + "=" +
+                                item.Value.ToString(CultureInfo.InvariantCulture)));
+                    if (!visited.Add(stateKey))
+                        break;
+
+                    if (instruction.Kind == "branch" && instruction.Target.HasValue)
+                    {
+                        long? left = instruction.Rs1.HasValue ? state.Registers[instruction.Rs1.Value] : null;
+                        long? right = instruction.Rs2.HasValue ? state.Registers[instruction.Rs2.Value] : null;
+                        bool? taken = EvaluateBranch(instruction.BranchKind, left, right);
+                        if (taken != false && instructionIndices.TryGetValue(
+                            instruction.Target.Value, out int targetIndex))
+                        {
+                            ConfigTraceState branchState = state.Clone();
+                            branchState.InstructionIndex = targetIndex;
+                            pending.Enqueue(branchState);
+                        }
+                        if (taken == true)
+                            break;
+                        state.InstructionIndex++;
+                        continue;
+                    }
+
+                    if (instruction.Kind == "j")
+                    {
+                        if (instruction.Target.HasValue &&
+                            instructionIndices.TryGetValue(instruction.Target.Value, out int targetIndex))
+                        {
+                            state.InstructionIndex = targetIndex;
+                            continue;
+                        }
+                        break;
+                    }
+
+                    if (instruction.Call)
+                    {
+                        if (instruction.Target == dispatcher)
+                        {
+                            long? device = state.Registers[10];
+                            if (device.HasValue && state.ObjectModes.TryGetValue(device.Value, out int mode))
+                                modes.Add(mode);
+                            break;
+                        }
+                        ApplyCallClobber(state, instruction.Offset);
+                        state.InstructionIndex++;
+                        continue;
+                    }
+                    if (instruction.Kind == "jr" || IsReturn(instruction))
+                        break;
+
+                    if (instruction.Kind == "store" && instruction.StoreWidth == 4 &&
+                        instruction.Imm == 4 && instruction.Rs1.HasValue && instruction.Rs2.HasValue)
+                    {
+                        long? device = state.Registers[instruction.Rs1.Value];
+                        long? stored = state.Registers[instruction.Rs2.Value];
+                        if (device.HasValue && IsConcreteSymbol(stored) && stored.Value >= 1 && stored.Value <= 6)
+                            state.ObjectModes[device.Value] = (int)stored.Value;
+                    }
+
+                    if (instruction.Kind == "load" && instruction.Rd.HasValue)
+                    {
+                        state.Registers[instruction.Rd.Value] =
+                            MakeSymbolicToken(instruction.Offset, instruction.Rd.Value);
+                    }
+                    else if ((instruction.Kind == "li" || instruction.Kind == "lui") &&
+                        instruction.Rd.HasValue && instruction.Imm.HasValue)
+                    {
+                        state.Registers[instruction.Rd.Value] = instruction.Imm.Value;
+                    }
+                    else if (instruction.Kind == "mv" && instruction.Rd.HasValue && instruction.Rs1.HasValue)
+                    {
+                        state.Registers[instruction.Rd.Value] = state.Registers[instruction.Rs1.Value];
+                    }
+                    else if (instruction.Kind == "addi" && instruction.Rd.HasValue &&
+                        instruction.Rs1.HasValue && instruction.Imm.HasValue)
+                    {
+                        long? source = state.Registers[instruction.Rs1.Value];
+                        state.Registers[instruction.Rd.Value] = IsConcreteSymbol(source)
+                            ? source.Value + instruction.Imm.Value
+                            : instruction.Imm.Value == 0 ? source : null;
+                    }
+                    else if (instruction.Kind == "andi" && instruction.Rd.HasValue &&
+                        instruction.Rs1.HasValue && instruction.Imm.HasValue)
+                    {
+                        long? source = state.Registers[instruction.Rs1.Value];
+                        state.Registers[instruction.Rd.Value] = IsConcreteSymbol(source)
+                            ? (long?)(source.Value & instruction.Imm.Value)
+                            : (long?)null;
+                    }
+                    else if (instruction.Kind == "slli" && instruction.Rd.HasValue &&
+                        instruction.Rs1.HasValue && instruction.Imm.HasValue)
+                    {
+                        long? source = state.Registers[instruction.Rs1.Value];
+                        state.Registers[instruction.Rd.Value] = IsConcreteSymbol(source)
+                            ? (long?)(source.Value << instruction.Imm.Value)
+                            : (long?)null;
+                    }
+                    else if (instruction.Kind == "add" && instruction.Rd.HasValue &&
+                        instruction.Rs1.HasValue && instruction.Rs2.HasValue)
+                    {
+                        long? left = state.Registers[instruction.Rs1.Value];
+                        long? right = state.Registers[instruction.Rs2.Value];
+                        state.Registers[instruction.Rd.Value] =
+                            IsConcreteSymbol(left) && IsConcreteSymbol(right)
+                                ? (long?)(left.Value + right.Value)
+                                : (long?)null;
+                    }
+                    else if (instruction.Rd.HasValue && instruction.Rd.Value != 0)
+                    {
+                        state.Registers[instruction.Rd.Value] = null;
+                    }
+                    state.Registers[0] = 0;
+                    state.InstructionIndex++;
+                }
+            }
+            return modes;
+        }
+
+        private static HashSet<string> TraceDirectConfigDirections(
+            List<RvInstruction> instructions,
+            Dictionary<int, int> instructionIndices,
+            int startIndex,
+            int endOffset,
+            HashSet<int> inputPrimitives,
+            HashSet<int> outputPrimitives,
+            int directionArgument,
+            int pullArgument)
+        {
+            HashSet<string> directions = new HashSet<string>(StringComparer.Ordinal);
+            long entryPin = MakeSymbolicToken(instructions[startIndex].Offset, 10);
+            ConfigTraceState initial = new ConfigTraceState { InstructionIndex = startIndex };
+            initial.Registers[0] = 0;
+            initial.Registers[10] = entryPin;
+            initial.Registers[11] = directionArgument;
+            initial.Registers[12] = pullArgument;
+            Queue<ConfigTraceState> pending = new Queue<ConfigTraceState>();
+            HashSet<string> visited = new HashSet<string>(StringComparer.Ordinal);
+            pending.Enqueue(initial);
+
+            while (pending.Count != 0 && visited.Count < 256)
+            {
+                ConfigTraceState state = pending.Dequeue();
+                while (state.InstructionIndex < instructions.Count && state.Steps++ < 160)
+                {
+                    RvInstruction instruction = instructions[state.InstructionIndex];
+                    if (instruction.Offset >= endOffset)
+                        break;
+                    string stateKey = instruction.Offset.ToString(CultureInfo.InvariantCulture) + "|" +
+                        string.Join(",", state.Registers.Select(value => value.HasValue
+                            ? value.Value.ToString(CultureInfo.InvariantCulture)
+                            : "?"));
+                    if (!visited.Add(stateKey))
+                        break;
+
+                    if (instruction.Target.HasValue && state.Registers[10] == entryPin)
+                    {
+                        if (inputPrimitives.Contains(instruction.Target.Value))
+                        {
+                            directions.Add("input");
+                            break;
+                        }
+                        if (outputPrimitives.Contains(instruction.Target.Value))
+                        {
+                            directions.Add("output");
+                            break;
+                        }
+                    }
+
+                    if (instruction.Kind == "branch" && instruction.Target.HasValue)
+                    {
+                        long? left = instruction.Rs1.HasValue ? state.Registers[instruction.Rs1.Value] : null;
+                        long? right = instruction.Rs2.HasValue ? state.Registers[instruction.Rs2.Value] : null;
+                        bool? taken = EvaluateBranch(instruction.BranchKind, left, right);
+                        if (taken != false && instructionIndices.TryGetValue(
+                            instruction.Target.Value, out int targetIndex))
+                        {
+                            ConfigTraceState branchState = state.Clone();
+                            branchState.InstructionIndex = targetIndex;
+                            pending.Enqueue(branchState);
+                        }
+                        if (taken == true)
+                            break;
+                        state.InstructionIndex++;
+                        continue;
+                    }
+                    if (instruction.Kind == "j")
+                    {
+                        if (instruction.Target.HasValue &&
+                            instructionIndices.TryGetValue(instruction.Target.Value, out int targetIndex))
+                        {
+                            state.InstructionIndex = targetIndex;
+                            continue;
+                        }
+                        break;
+                    }
+                    if (instruction.Call)
+                    {
+                        ApplyCallClobber(state, instruction.Offset);
+                        state.InstructionIndex++;
+                        continue;
+                    }
+                    if (instruction.Kind == "jr" || IsReturn(instruction))
+                        break;
+
+                    if (instruction.Kind == "load" && instruction.Rd.HasValue)
+                    {
+                        state.Registers[instruction.Rd.Value] =
+                            MakeSymbolicToken(instruction.Offset, instruction.Rd.Value);
+                    }
+                    else if ((instruction.Kind == "li" || instruction.Kind == "lui") &&
+                        instruction.Rd.HasValue && instruction.Imm.HasValue)
+                    {
+                        state.Registers[instruction.Rd.Value] = instruction.Imm.Value;
+                    }
+                    else if (instruction.Kind == "mv" && instruction.Rd.HasValue && instruction.Rs1.HasValue)
+                    {
+                        state.Registers[instruction.Rd.Value] = state.Registers[instruction.Rs1.Value];
+                    }
+                    else if (instruction.Kind == "addi" && instruction.Rd.HasValue &&
+                        instruction.Rs1.HasValue && instruction.Imm.HasValue)
+                    {
+                        long? source = state.Registers[instruction.Rs1.Value];
+                        state.Registers[instruction.Rd.Value] = IsConcreteSymbol(source)
+                            ? source.Value + instruction.Imm.Value
+                            : instruction.Imm.Value == 0 ? source : null;
+                    }
+                    else if (instruction.Kind == "andi" && instruction.Rd.HasValue &&
+                        instruction.Rs1.HasValue && instruction.Imm.HasValue)
+                    {
+                        long? source = state.Registers[instruction.Rs1.Value];
+                        state.Registers[instruction.Rd.Value] = IsConcreteSymbol(source)
+                            ? (long?)(source.Value & instruction.Imm.Value)
+                            : (long?)null;
+                    }
+                    else if (instruction.Kind == "slli" && instruction.Rd.HasValue &&
+                        instruction.Rs1.HasValue && instruction.Imm.HasValue)
+                    {
+                        long? source = state.Registers[instruction.Rs1.Value];
+                        state.Registers[instruction.Rd.Value] = IsConcreteSymbol(source)
+                            ? (long?)(source.Value << instruction.Imm.Value)
+                            : (long?)null;
+                    }
+                    else if (instruction.Kind == "add" && instruction.Rd.HasValue &&
+                        instruction.Rs1.HasValue && instruction.Rs2.HasValue)
+                    {
+                        long? left = state.Registers[instruction.Rs1.Value];
+                        long? right = state.Registers[instruction.Rs2.Value];
+                        state.Registers[instruction.Rd.Value] =
+                            IsConcreteSymbol(left) && IsConcreteSymbol(right)
+                                ? (long?)(left.Value + right.Value)
+                                : (long?)null;
+                    }
+                    else if (instruction.Rd.HasValue && instruction.Rd.Value != 0)
+                    {
+                        state.Registers[instruction.Rd.Value] = null;
+                    }
+                    state.Registers[0] = 0;
+                    state.InstructionIndex++;
+                }
+            }
+            return directions;
+        }
+
+        private static Dictionary<int, ConfigApiProof> FindGpioConfigApis(
+            List<RvInstruction> instructions,
+            List<CallRecord> transfers,
+            List<int> entries,
+            Dictionary<int, int> instructionIndices,
+            HashSet<int> dispatchers,
+            HashSet<int> inputPrimitives,
+            HashSet<int> outputPrimitives)
+        {
+            Dictionary<int, ConfigApiProof> apis = new Dictionary<int, ConfigApiProof>();
+            foreach (int dispatcher in dispatchers)
+            {
+                foreach (int caller in transfers.Where(item => item.Target == dispatcher)
+                    .Select(item => FunctionEntryForOffset(entries, item.Offset))
+                    .Where(item => item >= 0)
+                    .Distinct())
+                {
+                    int entryPosition = entries.BinarySearch(caller);
+                    if (entryPosition < 0 || !instructionIndices.TryGetValue(caller, out int startIndex))
+                        continue;
+                    int endOffset = entryPosition + 1 < entries.Count
+                        ? entries[entryPosition + 1]
+                        : instructions[instructions.Count - 1].Offset + instructions[instructions.Count - 1].Size;
+                    Dictionary<int, HashSet<int>> modesByDirection = new Dictionary<int, HashSet<int>>
+                    {
+                        [0] = new HashSet<int>(),
+                        [1] = new HashSet<int>(),
+                    };
+                    for (int direction = 0; direction <= 1; direction++)
+                    {
+                        for (int pull = 0; pull <= 3; pull++)
+                        {
+                            modesByDirection[direction].UnionWith(TraceConfigModes(
+                                instructions, instructionIndices, startIndex, endOffset,
+                                dispatcher, direction, pull));
+                        }
+                    }
+                    if (modesByDirection[0].Count != 0 && modesByDirection[1].Count != 0 &&
+                        modesByDirection[0].All(mode => mode >= 1 && mode <= 3) &&
+                        modesByDirection[1].All(mode => mode >= 4 && mode <= 6))
+                    {
+                        apis[caller] = new ConfigApiProof
+                        {
+                            Directions = new Dictionary<int, string>
+                            {
+                                [0] = "input",
+                                [1] = "output",
+                            },
+                            Method = "six-mode HOSAL dispatch table",
+                        };
+                    }
+                }
+            }
+
+            HashSet<int> directWrapperCallers = transfers.Where(item =>
+                inputPrimitives.Contains(item.Target) || outputPrimitives.Contains(item.Target))
+                .Select(item => FunctionEntryForOffset(entries, item.Offset))
+                .Where(item => item >= 0)
+                .ToHashSet();
+            foreach (int caller in directWrapperCallers)
+            {
+                int entryPosition = entries.BinarySearch(caller);
+                if (entryPosition < 0 || !instructionIndices.TryGetValue(caller, out int startIndex))
+                    continue;
+                int endOffset = entryPosition + 1 < entries.Count
+                    ? entries[entryPosition + 1]
+                    : instructions[instructions.Count - 1].Offset + instructions[instructions.Count - 1].Size;
+                if (endOffset - caller > 0x100)
+                    continue;
+
+                Dictionary<int, string> mapping = new Dictionary<int, string>();
+                for (int directionArgument = 0; directionArgument <= 1; directionArgument++)
+                {
+                    HashSet<string> directions = new HashSet<string>(StringComparer.Ordinal);
+                    for (int pull = 0; pull <= 3; pull++)
+                    {
+                        directions.UnionWith(TraceDirectConfigDirections(
+                            instructions,
+                            instructionIndices,
+                            startIndex,
+                            endOffset,
+                            inputPrimitives,
+                            outputPrimitives,
+                            directionArgument,
+                            pull));
+                    }
+                    if (directions.Count == 1)
+                        mapping[directionArgument] = directions.First();
+                }
+                if (mapping.Count == 2)
+                {
+                    apis[caller] = new ConfigApiProof
+                    {
+                        Directions = mapping,
+                        Method = "direction-selecting wrapper",
+                    };
+                }
+            }
+            return apis;
+        }
+
+        private static void AddHardwareGpioFindings(
+            byte[] data,
+            int firmwareStart,
+            int firmwareEnd,
+            List<RvInstruction> instructions,
+            List<CallRecord> transfers,
+            AnalysisResult result)
+        {
+            if (instructions.Count == 0 || transfers.Count == 0)
+                return;
+
+            List<int> entries = transfers.Select(item => item.Target)
+                .Append(instructions[0].Offset)
+                .Distinct()
+                .OrderBy(item => item)
+                .ToList();
+            Dictionary<int, int> instructionIndices = instructions
+                .Select((instruction, index) => new { instruction.Offset, Index = index })
+                .GroupBy(item => item.Offset)
+                .ToDictionary(group => group.Key, group => group.First().Index);
+            Dictionary<int, List<CallRecord>> transfersByCaller = transfers
+                .GroupBy(item => FunctionEntryForOffset(entries, item.Offset))
+                .ToDictionary(group => group.Key, group => group.ToList());
+            Dictionary<string, HashSet<int>> primitives = new Dictionary<string, HashSet<int>>(StringComparer.Ordinal)
+            {
+                ["read"] = new HashSet<int>(),
+                ["write"] = new HashSet<int>(),
+                ["input-config"] = new HashSet<int>(),
+                ["output-config"] = new HashSet<int>(),
+            };
+
+            for (int entryPosition = 0; entryPosition < entries.Count; entryPosition++)
+            {
+                int entry = entries[entryPosition];
+                if (!instructionIndices.TryGetValue(entry, out int startIndex))
+                    continue;
+                int nextEntry = entryPosition + 1 < entries.Count
+                    ? entries[entryPosition + 1]
+                    : instructions[instructions.Count - 1].Offset + instructions[instructions.Count - 1].Size;
+                int endIndex = startIndex;
+                while (endIndex < instructions.Count && instructions[endIndex].Offset < nextEntry)
+                    endIndex++;
+                foreach (string kind in ClassifyGpioPrimitive(instructions, startIndex, endIndex))
+                    primitives[kind].Add(entry);
+                string configKind = ClassifyGpioConfigPrimitive(instructions, startIndex, endIndex);
+                if (configKind != null)
+                    primitives[configKind].Add(entry);
+            }
+
+            Dictionary<uint, int> configTables = FindGpioConfigTables(
+                data,
+                firmwareStart,
+                firmwareEnd,
+                instructions,
+                instructionIndices,
+                primitives["input-config"],
+                primitives["output-config"]);
+            HashSet<int> configDispatchers = FindGpioConfigDispatchers(
+                instructions, entries, instructionIndices, configTables.Keys);
+            Dictionary<int, ConfigApiProof> configApis = FindGpioConfigApis(
+                instructions,
+                transfers,
+                entries,
+                instructionIndices,
+                configDispatchers,
+                primitives["input-config"],
+                primitives["output-config"]);
+            bool reportedConfig = false;
+            foreach (string direction in new[] { "input", "output" })
+            {
+                string primitiveKind = direction + "-config";
+                List<CallRecord> directConfigCalls = transfers.Where(item =>
+                    primitives[primitiveKind].Contains(item.Target) &&
+                    item.Args[0].HasValue && item.Args[0].Value >= 0 && item.Args[0].Value <= 31)
+                    .OrderBy(item => item.Offset)
+                    .ToList();
+                HashSet<int> suppressedDirectOffsets = new HashSet<int>();
+                foreach (IGrouping<int, CallRecord> primitiveCalls in directConfigCalls.GroupBy(
+                    item => item.Target))
+                {
+                    suppressedDirectOffsets.UnionWith(FindGpioSweepOffsets(
+                        primitiveCalls.ToList(), direction + " configuration", result));
+                }
+                foreach (IGrouping<string, CallRecord> group in directConfigCalls
+                    .Where(item => !suppressedDirectOffsets.Contains(item.Offset))
+                    .GroupBy(item =>
+                        item.Args[0].Value.ToString(CultureInfo.InvariantCulture) + ":" +
+                        item.Target.ToString(CultureInfo.InvariantCulture), StringComparer.Ordinal))
+                {
+                    List<CallRecord> calls = group.OrderBy(item => item.Offset).ToList();
+                    int pin = calls[0].Args[0].Value;
+                    int primitive = calls[0].Target;
+                    string sites = string.Join(", ", calls.Take(4)
+                        .Select(item => "0x" + item.Offset.ToString("X", CultureInfo.InvariantCulture)));
+                    if (calls.Count > 4)
+                        sites += ", +" + (calls.Count - 4).ToString(CultureInfo.InvariantCulture) + " more";
+                    AddFinding(result,
+                        pin,
+                        "GPIO " + direction + " configuration (role unresolved)",
+                        Confidence.High,
+                        "Hardware-proven BL602 configuration",
+                        "constant GPIO" + pin.ToString(CultureInfo.InvariantCulture) +
+                            " directly reaches stack-built GLB_GPIO_Cfg_Type helper 0x" +
+                            primitive.ToString("X", CultureInfo.InvariantCulture) + " at " + sites,
+                        false);
+                    reportedConfig = true;
+                }
+            }
+
+            List<CallRecord> configCalls = transfers.Where(item =>
+                configApis.ContainsKey(item.Target) &&
+                item.Args[0].HasValue && item.Args[0].Value >= 0 && item.Args[0].Value <= 31 &&
+                item.Args[1].HasValue && (item.Args[1].Value == 0 || item.Args[1].Value == 1))
+                .OrderBy(item => item.Offset)
+                .ToList();
+            HashSet<int> suppressedConfigOffsets = new HashSet<int>();
+            foreach (IGrouping<string, CallRecord> apiDirectionCalls in configCalls.GroupBy(item =>
+                item.Target.ToString(CultureInfo.InvariantCulture) + ":" +
+                item.Args[1].Value.ToString(CultureInfo.InvariantCulture), StringComparer.Ordinal))
+            {
+                string direction = configApis[apiDirectionCalls.First().Target].Directions[
+                    apiDirectionCalls.First().Args[1].Value];
+                suppressedConfigOffsets.UnionWith(FindGpioSweepOffsets(
+                    apiDirectionCalls.ToList(), direction + " configuration", result));
+            }
+
+            foreach (IGrouping<string, CallRecord> group in configCalls
+                .Where(item => !suppressedConfigOffsets.Contains(item.Offset))
+                .GroupBy(item =>
+                    item.Args[0].Value.ToString(CultureInfo.InvariantCulture) + ":" +
+                    item.Args[1].Value.ToString(CultureInfo.InvariantCulture) + ":" +
+                    item.Target.ToString(CultureInfo.InvariantCulture), StringComparer.Ordinal))
+            {
+                List<CallRecord> calls = group.OrderBy(item => item.Offset).ToList();
+                int pin = calls[0].Args[0].Value;
+                int api = calls[0].Target;
+                ConfigApiProof proof = configApis[api];
+                string direction = proof.Directions[calls[0].Args[1].Value];
+                string sites = string.Join(", ", calls.Take(4)
+                    .Select(item => "0x" + item.Offset.ToString("X", CultureInfo.InvariantCulture)));
+                if (calls.Count > 4)
+                    sites += ", +" + (calls.Count - 4).ToString(CultureInfo.InvariantCulture) + " more";
+                AddFinding(result,
+                    pin,
+                    "GPIO " + direction + " configuration (role unresolved)",
+                    Confidence.High,
+                    "Hardware-proven BL602 configuration",
+                        "constant GPIO" + pin.ToString(CultureInfo.InvariantCulture) +
+                            " reaches config API 0x" + api.ToString("X", CultureInfo.InvariantCulture) +
+                            " at " + sites +
+                            "; its direction is proven by a " + proof.Method +
+                            " leading to a stack-built GLB_GPIO_Cfg_Type helper",
+                    false);
+                reportedConfig = true;
+            }
+            if (reportedConfig)
+            {
+                const string configNote = "Hardware-proven GPIO configuration rows establish configured direction only; they do not identify the attached device role or electrical polarity.";
+                if (!result.Notes.Contains(configNote))
+                    result.Notes.Add(configNote);
+            }
+            else if (configTables.Count != 0)
+            {
+                AddDiagnostic(result, "Hardware-proven BL602 GPIO input/output configuration helpers and six-mode HOSAL dispatch table found, but no constant application pin reaches a proven configuration API.");
+            }
+
+            foreach (string kind in new[] { "read", "write" })
+            {
+                if (primitives[kind].Count == 0)
+                    continue;
+
+                HashSet<int> semanticTargets = new HashSet<int>(primitives[kind]);
+                Dictionary<int, int> semanticDepth = primitives[kind].ToDictionary(item => item, item => 0);
+                Dictionary<int, int> semanticPrimitive = primitives[kind].ToDictionary(item => item, item => item);
+                // Cover the small HOSAL/device-registry wrappers used by the
+                // SDK, but stop before treating arbitrary application call
+                // graph ancestry as GPIO semantics.
+                for (int wrapperDepth = 1; wrapperDepth <= 2; wrapperDepth++)
+                {
+                    foreach (int caller in entries)
+                    {
+                        if (semanticTargets.Contains(caller))
+                            continue;
+                        int entryPosition = entries.BinarySearch(caller);
+                        int nextEntry = entryPosition + 1 < entries.Count
+                            ? entries[entryPosition + 1]
+                            : instructions[instructions.Count - 1].Offset + instructions[instructions.Count - 1].Size;
+                        if (nextEntry - caller > 0x100)
+                            continue;
+                        if (!transfersByCaller.TryGetValue(caller, out List<CallRecord> callerTransfers))
+                            continue;
+                        List<CallRecord> semanticTransfers = callerTransfers.Where(item =>
+                            semanticDepth.TryGetValue(item.Target, out int depth) &&
+                            depth == wrapperDepth - 1).ToList();
+                        if (semanticTransfers.Count == 0 || semanticTransfers.Any(item => item.Args[0].HasValue))
+                            continue;
+                        List<int> origins = semanticTransfers.Select(item => semanticPrimitive[item.Target])
+                            .Distinct()
+                            .ToList();
+                        if (origins.Count != 1)
+                            continue;
+                        semanticTargets.Add(caller);
+                        semanticDepth[caller] = wrapperDepth;
+                        semanticPrimitive[caller] = origins[0];
+                    }
+                }
+
+                List<CallRecord> pinCalls = transfers.Where(item =>
+                    semanticTargets.Contains(item.Target) &&
+                    !semanticTargets.Contains(FunctionEntryForOffset(entries, item.Offset)) &&
+                    item.Args[0].HasValue && item.Args[0].Value >= 0 && item.Args[0].Value <= 31)
+                    .OrderBy(item => item.Offset)
+                    .ToList();
+                HashSet<int> suppressedOffsets = new HashSet<int>();
+                foreach (IGrouping<int, CallRecord> primitiveCalls in pinCalls.GroupBy(item =>
+                    semanticPrimitive[item.Target]))
+                {
+                    suppressedOffsets.UnionWith(FindGpioSweepOffsets(
+                        primitiveCalls.OrderBy(item => item.Offset).ToList(),
+                        kind,
+                        result));
+                }
+                List<CallRecord> reportableCalls = pinCalls
+                    .Where(item => !suppressedOffsets.Contains(item.Offset))
+                    .ToList();
+
+                if (pinCalls.Count == 0)
+                {
+                    foreach (int primitive in primitives[kind].OrderBy(item => item))
+                    {
+                        AddDiagnostic(result, "Hardware GPIO " + kind + " primitive found at 0x" +
+                            primitive.ToString("X", CultureInfo.InvariantCulture) +
+                            ", but no constant application pin reaches it.");
+                    }
+                    continue;
+                }
+
+                foreach (IGrouping<string, CallRecord> group in reportableCalls.GroupBy(item =>
+                    item.Args[0].Value.ToString(CultureInfo.InvariantCulture) + ":" +
+                    semanticPrimitive[item.Target].ToString(CultureInfo.InvariantCulture),
+                    StringComparer.Ordinal))
+                {
+                    List<CallRecord> calls = group.OrderBy(item => item.Offset).ToList();
+                    int pin = calls[0].Args[0].Value;
+                    int primitive = semanticPrimitive[calls[0].Target];
+                    int depth = calls.Min(item => semanticDepth[item.Target]);
+                    string sites = string.Join(", ", calls.Take(4)
+                        .Select(item => "0x" + item.Offset.ToString("X", CultureInfo.InvariantCulture)));
+                    if (calls.Count > 4)
+                        sites += ", +" + (calls.Count - 4).ToString(CultureInfo.InvariantCulture) + " more";
+                    AddFinding(result,
+                        pin,
+                        "GPIO " + (kind == "write" ? "output" : "input") + " use (role unresolved)",
+                        depth == 0 ? Confidence.High : Confidence.Medium,
+                        "Hardware-proven RV32 data flow",
+                        "GLB GPIO " + kind + " primitive 0x" +
+                            primitive.ToString("X", CultureInfo.InvariantCulture) +
+                            "; constant GPIO" + pin.ToString(CultureInfo.InvariantCulture) +
+                            " reaches the semantic call chain at " + sites,
+                        false);
+                }
+
+                if (reportableCalls.Count != 0)
+                {
+                    const string note = "Hardware-proven application GPIO rows establish pin use and direction only; the attached device role remains unresolved unless separate evidence names it.";
+                    if (!result.Notes.Contains(note))
+                        result.Notes.Add(note);
+                }
+            }
+        }
+
+        private static HashSet<int> FindGpioSweepOffsets(
+            List<CallRecord> calls,
+            string kind,
+            AnalysisResult result)
+        {
+            HashSet<int> suppressed = new HashSet<int>();
+            List<CallRecord> cluster = new List<CallRecord>();
+            Action inspectCluster = () =>
+            {
+                if (cluster.Count == 0)
+                    return;
+                List<int> pins = cluster.Select(item => item.Args[0].Value).Distinct().OrderBy(item => item).ToList();
+                bool allBinary = cluster.All(item => item.Args[1] == 0 || item.Args[1] == 1);
+                bool exercisesBothLevels = !kind.Contains("configuration") && pins.Count >= 5 && pins.All(pin =>
+                    cluster.Any(item => item.Args[0] == pin && item.Args[1] == 0) &&
+                    cluster.Any(item => item.Args[0] == pin && item.Args[1] == 1));
+                // Broad GPIO walking/self-test sequences occur across eWeLink
+                // families and describe SDK coverage, not fitted PCB roles.
+                bool broadSingleLevelSetup = pins.Count >= 8 && allBinary;
+                if (!exercisesBothLevels && !broadSingleLevelSetup)
+                    return;
+                foreach (CallRecord call in cluster)
+                    suppressed.Add(call.Offset);
+                AddDiagnostic(result, "Hardware-proven GPIO " + kind + " sweep/setup exercises GPIOs [" +
+                    string.Join(",", pins) + "] in a dense sequence at 0x" +
+                    cluster[0].Offset.ToString("X", CultureInfo.InvariantCulture) + "-0x" +
+                    cluster[cluster.Count - 1].Offset.ToString("X", CultureInfo.InvariantCulture) +
+                    "; excluded from pin-use findings.");
+            };
+
+            foreach (CallRecord call in calls)
+            {
+                if (cluster.Count != 0 && call.Offset - cluster[cluster.Count - 1].Offset > 0x40)
+                {
+                    inspectCluster();
+                    cluster.Clear();
+                }
+                cluster.Add(call);
+            }
+            inspectCluster();
+            return suppressed;
         }
 
         private static List<DirectPwmCandidate> FindDirectPwmCandidates(List<CallRecord> calls, List<string> markers)
@@ -1712,6 +2944,35 @@ namespace BK7231Flasher
                 .ToList();
         }
 
+        private static bool TryFindFirmwareRegion(byte[] data, out int start, out int end)
+        {
+            start = 0;
+            end = 0;
+            foreach (int searchStart in new[] { 0x10000, 0 })
+            {
+                if (searchStart >= data.Length)
+                    continue;
+                int header = IndexOf(data, Bytes("BFNP"), searchStart, data.Length);
+                while (header >= 0 && header + 124 <= data.Length)
+                {
+                    // BL602 boot headers place img_len at +120 and the linked
+                    // payload in the following 4 KiB slot.
+                    uint imageLength = ReadLe32(data, header + 120);
+                    long payloadStart = (long)header + 0x1000;
+                    long payloadEnd = payloadStart + imageLength;
+                    if (imageLength >= 0x1000 && payloadStart < data.Length &&
+                        payloadEnd > payloadStart && payloadEnd <= data.Length)
+                    {
+                        start = (int)payloadStart;
+                        end = (int)payloadEnd;
+                        return true;
+                    }
+                    header = IndexOf(data, Bytes("BFNP"), header + 4, data.Length);
+                }
+            }
+            return false;
+        }
+
         private static void AnalyzeApplication(
             byte[] data,
             List<DtbHeader> headers,
@@ -1720,13 +2981,18 @@ namespace BK7231Flasher
             bool deep,
             AnalysisResult result)
         {
-            int start = data.Length > 0x12000 ? 0x10000 : 0;
-            int firstDtb = headers.Count == 0 ? data.Length : headers.Min(item => item.Base);
-            int end = deep ? firstDtb : Math.Min(Math.Min(firstDtb, data.Length), 0x90000);
-            if (end <= start)
+            int start;
+            int end;
+            if (!TryFindFirmwareRegion(data, out start, out end))
             {
-                start = 0;
-                end = Math.Min(firstDtb, data.Length);
+                start = data.Length > 0x12000 ? 0x10000 : 0;
+                int firstDtb = headers.Count == 0 ? data.Length : headers.Min(item => item.Base);
+                end = deep ? firstDtb : Math.Min(Math.Min(firstDtb, data.Length), 0x90000);
+                if (end <= start)
+                {
+                    start = 0;
+                    end = Math.Min(firstDtb, data.Length);
+                }
             }
             result.ApplicationScanStart = start;
             result.ApplicationScanEnd = end;
@@ -1734,9 +3000,11 @@ namespace BK7231Flasher
             List<RvInstruction> instructions = DecodeRiscV(data, start, end);
             result.DecodedInstructionCount = instructions.Count;
             List<CallRecord> calls = CollectDirectCalls(instructions);
+            List<CallRecord> transfers = CollectDirectTransfers(instructions);
             List<DirectPwmCandidate> pwmCandidates = FindDirectPwmCandidates(calls, markers);
             List<StackPinTuple> stackTuples = FindStackPinTuples(instructions);
             List<DigitalOutputCandidate> digitalOutputs = FindDigitalOutputCandidates(calls);
+            AddHardwareGpioFindings(data, start, end, instructions, transfers, result);
 
             bool p93sfgApplied = false;
             if (productIds.Contains("p93sfg") && markers.Contains("direct PWM lighting"))

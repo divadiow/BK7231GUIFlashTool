@@ -77,7 +77,7 @@ namespace BK7231Flasher
 
             checkBoxBl602IoDeepScan = new CheckBox
             {
-                Text = "Deep application scan",
+                Text = "Deep fallback scan (headerless dumps)",
                 AutoSize = true,
                 Checked = false,
                 Padding = new Padding(8, 5, 0, 0),
