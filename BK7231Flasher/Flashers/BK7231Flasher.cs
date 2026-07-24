@@ -395,13 +395,16 @@ namespace BK7231Flasher
         void consumePending()
         {
             // Never pass a count larger than the destination buffer. This also drains correctly
-            // on runtimes whose receive queue is exposed in smaller chunks.
-            while (serial.BytesToRead > 0)
+            // on runtimes whose receive queue is exposed in smaller chunks. Only drain the bytes
+            // pending on entry so a continuously transmitting target cannot hold this loop forever.
+            int pending = serial.BytesToRead;
+            while (pending > 0)
             {
-                int toRead = Math.Min(tmp.Length, serial.BytesToRead);
+                int toRead = Math.Min(tmp.Length, pending);
                 int readNow = serial.Read(tmp, 0, toRead);
                 if (readNow <= 0)
                     break;
+                pending -= readNow;
             }
         }
 

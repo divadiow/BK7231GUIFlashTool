@@ -58,6 +58,20 @@ jobs:
       - name: Build with Mono 6.12
         run: docker build --file docker/Dockerfile --tag bk7231guiflashtool-mono .
 
+      - name: Collect Mono build output
+        run: |
+          mkdir -p MonoBuildOutput
+          container_id=$(docker create bk7231guiflashtool-mono)
+          docker cp "$container_id:/out/." MonoBuildOutput
+          docker rm "$container_id"
+
+      - name: Upload Mono Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: BK7231GUIFlashTool-Mono
+          path: MonoBuildOutput/
+          if-no-files-found: error
+
   release:
     needs: build
     runs-on: windows-latest

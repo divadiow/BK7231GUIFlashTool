@@ -656,7 +656,11 @@ namespace BK7231Flasher
             SerialPort sp = sender as SerialPort;
             int numBytes = sp.BytesToRead;
             byte[] recv = new byte[numBytes];
-            sp.Read(recv, 0, numBytes);
+            int read = sp.Read(recv, 0, numBytes);
+            if (read <= 0)
+                return;
+            if (read != recv.Length)
+                Array.Resize(ref recv, read);
             ProcessIncomingBytes(recv);
         }
 
