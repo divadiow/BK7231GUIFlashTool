@@ -388,6 +388,123 @@ namespace BK7231Flasher
         /// </summary>
         public SerialPort Port;
 
+        // SerialPort.DataReceived is absent or unreliable on some Mono serial backends. Keep the
+        // native Windows event-driven path unchanged, and use polling instead on compatibility
+        // runtimes. Both paths feed the same XMODEM state machine.
+        internal static readonly bool RequiresSerialInputPolling =
+            Type.GetType("Mono.Runtime") != null || Environment.OSVersion.Platform != PlatformID.Win32NT;
+        private readonly object SerialInputLock = new object();
+        private int SerialInputPumpGeneration;
+        private bool SerialInputHandlerAttached;
+
+        private void AttachSerialInput()
+        {
+            DetachSerialInput();
+
+            if (!RequiresSerialInputPolling)
+            {
+                Port.DataReceived += Port_DataReceived;
+                SerialInputHandlerAttached = true;
+                return;
+            }
+
+            int generation = Interlocked.Increment(ref SerialInputPumpGeneration);
+            var pump = new Thread(() => SerialInputPumpRoutine(generation));
+            pump.IsBackground = true;
+            pump.Name = "BK7231Flasher XMODEM serial input";
+            pump.Start();
+        }
+
+        private void DetachSerialInput()
+        {
+            // Invalidate any existing poll thread. It will leave without needing a blocking Join(),
+            // which is important because Abort() may itself be called by the input thread.
+            Interlocked.Increment(ref SerialInputPumpGeneration);
+
+            if (SerialInputHandlerAttached)
+            {
+                try
+                {
+                    Port.DataReceived -= Port_DataReceived;
+                }
+                catch (ObjectDisposedException)
+                {
+                    // Port was disposed while the transfer was being aborted.
+                }
+                catch (InvalidOperationException)
+                {
+                    // Port was closed while the transfer was being aborted.
+                }
+                SerialInputHandlerAttached = false;
+            }
+        }
+
+        private void SerialInputPumpRoutine(int generation)
+        {
+            while (generation == Interlocked.CompareExchange(ref SerialInputPumpGeneration, 0, 0))
+            {
+                try
+                {
+                    if (!DrainSerialInput())
+                        Thread.Sleep(2);
+                }
+                catch (TimeoutException)
+                {
+                    Thread.Sleep(2);
+                }
+                catch (IOException)
+                {
+                    break;
+                }
+                catch (ObjectDisposedException)
+                {
+                    break;
+                }
+                catch (InvalidOperationException)
+                {
+                    break;
+                }
+                catch (UnauthorizedAccessException)
+                {
+                    break;
+                }
+            }
+        }
+
+        private bool DrainSerialInput()
+        {
+            bool drainedAny = false;
+
+            lock (SerialInputLock)
+            {
+                if (CurrentState == States.Inactive || Port == null || !Port.IsOpen)
+                    return false;
+
+                while (CurrentState != States.Inactive && Port.IsOpen)
+                {
+                    int available = Port.BytesToRead;
+
+                    if (available <= 0)
+                        break;
+
+                    int requested = Math.Min(available, 4096);
+                    var recv = new byte[requested];
+                    int numBytes = Port.Read(recv, 0, requested);
+
+                    if (numBytes <= 0)
+                        break;
+
+                    if (numBytes != recv.Length)
+                        Array.Resize(ref recv, numBytes);
+
+                    drainedAny = true;
+                    ProcessIncomingBytes(recv);
+                }
+            }
+
+            return drainedAny;
+        }
+
         /// <summary>
         /// Performs blocking when the Receive() method is called by the user.
         /// </summary>
@@ -458,8 +575,8 @@ namespace BK7231Flasher
             // will not be stored.
             AllDataReceivedBuffer = allDataReceivedBuffer;
 
-            // Attach event handler
-            Port.DataReceived += new SerialDataReceivedEventHandler(Port_DataReceived);
+            // Attach the input mechanism appropriate for this runtime.
+            AttachSerialInput();
 
             InProgress.Wait();
 
@@ -540,7 +657,12 @@ namespace BK7231Flasher
             int numBytes = sp.BytesToRead;
             byte[] recv = new byte[numBytes];
             sp.Read(recv, 0, numBytes);
+            ProcessIncomingBytes(recv);
+        }
 
+        private void ProcessIncomingBytes(byte[] recv)
+        {
+            int numBytes = recv.Length;
             if (numBytes > 0)
             {
                 switch (CurrentState)
@@ -1176,8 +1298,8 @@ namespace BK7231Flasher
             SenderInitialized = false;
             Aborted = true;
 
-            // Detach event handler
-            Port.DataReceived -= Port_DataReceived;
+            // Detach both serial input mechanisms.
+            DetachSerialInput();
 
             // If we are sending data, tell Sender not to expect any more responses from Receiver.
             // This has no ill effect if we are receiving instead.
@@ -1203,8 +1325,20 @@ namespace BK7231Flasher
                 ReceiverStillAliveWatchdog = null;
             }
             catch(ObjectDisposedException) { }
-            // Flush serial data so they don't contaminate a future session
-            if(Port.IsOpen)
+            // Flush serial data so they don't contaminate a future session.
+            if(RequiresSerialInputPolling)
+            {
+                // Synchronize cleanup with the compatibility polling reader.
+                lock (SerialInputLock)
+                {
+                    if(Port.IsOpen)
+                    {
+                        Port.DiscardInBuffer();
+                        Port.DiscardOutBuffer();
+                    }
+                }
+            }
+            else if(Port.IsOpen)
             {
                 Port.DiscardInBuffer();
                 Port.DiscardOutBuffer();
@@ -1324,8 +1458,8 @@ namespace BK7231Flasher
             else
                 SenderPacketResponseWatchdog.Change(SenderPacketRetryTimeoutMillisec, SenderPacketRetryTimeoutMillisec);
 
-            // Attach event handler
-            Port.DataReceived += new SerialDataReceivedEventHandler(Port_DataReceived);
+            // Attach the input mechanism appropriate for this runtime.
+            AttachSerialInput();
 
             // Wait here for file initiation byte to be received from Receiver
             if(!instant) WaitForResponseFromReceiver.WaitOne();

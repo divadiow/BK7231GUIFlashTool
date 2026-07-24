@@ -22,7 +22,13 @@ namespace BK7231Flasher
             box.AppendText(text);
             box.SelectionColor = box.ForeColor;
 
-            SendMessage(box.Handle, WM_VSCROLL, SB_BOTTOM, 0);
+            if (Environment.OSVersion.Platform == PlatformID.Win32NT)
+                SendMessage(box.Handle, WM_VSCROLL, SB_BOTTOM, 0);
+            else
+            {
+                box.SelectionStart = box.TextLength;
+                box.ScrollToCaret();
+            }
         }
     }
 }

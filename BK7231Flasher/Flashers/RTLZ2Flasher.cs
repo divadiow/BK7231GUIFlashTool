@@ -709,6 +709,23 @@ namespace BK7231Flasher
 			}
 		}
 
+		int SendXmodem(byte[] data, uint offset)
+		{
+			if(!XMODEM.RequiresSerialInputPolling)
+			{
+				return xm.Send(data, offset);
+			}
+
+			int response = serial.ReadByte();
+			if(response != xm.NAK)
+			{
+				throw new Exception($"expected NAK, got {response}");
+			}
+
+			// Mono polling handles subsequent ACK/NAK bytes; the initial NAK was consumed above.
+			return xm.Send(data, offset, instant: true);
+		}
+
 		bool FlashTransmit(MemoryStream data, uint offset)
 		{
 			FlashInit(false);
@@ -735,7 +752,7 @@ namespace BK7231Flasher
 				}
 
 				logger.setState("Writing...", Color.Transparent);
-				var res = xm.Send(data.ToArray(), offset | FLASH_MMAP_BASE);
+				var res = SendXmodem(data.ToArray(), offset | FLASH_MMAP_BASE);
 				if(res != data.Length)
 				{
 					logger.setState("Write error!", Color.Transparent);
@@ -775,7 +792,7 @@ namespace BK7231Flasher
 				}
 
 				logger.setState("Writing...", Color.Transparent);
-				var res = xm.Send(data, offset);
+				var res = SendXmodem(data, offset);
 				if(res != data.Length)
 				{
 					logger.setState("Write error!", Color.Transparent);

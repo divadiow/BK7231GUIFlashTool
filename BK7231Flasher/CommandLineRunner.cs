@@ -70,15 +70,17 @@ namespace BK7231Flasher
 
         public static void Run(string[] args)
         {
-            // Attach to parent console or allocate a new one for output
-            if (!AttachConsole(ATTACH_PARENT_PROCESS))
+            // A Windows GUI executable needs attaching to a console. On Unix/Mono there is no
+            // kernel32.dll and the process already inherits its terminal streams.
+            if (Environment.OSVersion.Platform == PlatformID.Win32NT)
             {
-                AllocConsole();
-            }
+                if (!AttachConsole(ATTACH_PARENT_PROCESS))
+                    AllocConsole();
 
-            // Re-open stdout/stderr after attaching console
-            Console.SetOut(new StreamWriter(Console.OpenStandardOutput()) { AutoFlush = true });
-            Console.SetError(new StreamWriter(Console.OpenStandardError()) { AutoFlush = true });
+                // Re-open stdout/stderr after attaching the Windows console.
+                Console.SetOut(new StreamWriter(Console.OpenStandardOutput()) { AutoFlush = true });
+                Console.SetError(new StreamWriter(Console.OpenStandardError()) { AutoFlush = true });
+            }
 
             Thread.CurrentThread.CurrentCulture = CultureInfo.InvariantCulture;
             Thread.CurrentThread.CurrentUICulture = CultureInfo.InvariantCulture;

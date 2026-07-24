@@ -48,6 +48,16 @@ jobs:
           echo "Contents of BuildOutput/Release:"
           dir BK7231Flasher/BuildOutput/Release
 
+  mono-build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build with Mono 6.12
+        run: docker build --file docker/Dockerfile --tag bk7231guiflashtool-mono .
+
   release:
     needs: build
     runs-on: windows-latest

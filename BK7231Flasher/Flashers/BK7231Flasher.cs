@@ -394,9 +394,14 @@ namespace BK7231Flasher
         byte[] tmp = new byte[4096];
         void consumePending()
         {
-            if (serial.BytesToRead > 0)
+            // Never pass a count larger than the destination buffer. This also drains correctly
+            // on runtimes whose receive queue is exposed in smaller chunks.
+            while (serial.BytesToRead > 0)
             {
-                serial.Read(tmp, 0, serial.BytesToRead);
+                int toRead = Math.Min(tmp.Length, serial.BytesToRead);
+                int readNow = serial.Read(tmp, 0, toRead);
+                if (readNow <= 0)
+                    break;
             }
         }
 
@@ -404,101 +409,71 @@ namespace BK7231Flasher
         {
             consumePending();
             int realRead = 0;
-            serial.ReadTimeout = (int)(10*cfg_readTimeOutMultForSerialClass);
+            int serialReadTimeout = (int)(10 * cfg_readTimeOutMultForSerialClass);
+            serial.ReadTimeout = XMODEM.RequiresSerialInputPolling
+                ? Math.Max(1, serialReadTimeout)
+                : serialReadTimeout;
             if(txbuf != null)
             {
                 serial.Write(txbuf, 0, txbuf.Length);
             }
             if (rxLen == 0)
                 return null;
-            var timer = new Stopwatch();
-            timer.Start();
-            if (rxLen > 0)
+
+            var timer = Stopwatch.StartNew();
+            byte[] ret = new byte[rxLen];
+            bool readIncrementally = cfg_readReplyStyle != 0 || XMODEM.RequiresSerialInputPolling;
+            while (timer.Elapsed.TotalSeconds < timeout * cfg_readTimeOutMultForLoop)
             {
-                byte[] ret = new byte[rxLen];
-                while (timer.Elapsed.TotalSeconds < timeout * cfg_readTimeOutMultForLoop)
+                try
                 {
-                    try
+                    int available = serial.BytesToRead;
+                    bool enoughData = readIncrementally ? available > 0 : available >= rxLen;
+                    if (enoughData)
                     {
-                        if (cfg_readReplyStyle == 0)
-                        {
-                            //addLog("serial.BytesToRead " + serial.BytesToRead+"");
-                            if (serial.BytesToRead >= rxLen)
-                            {
-                                //  addLog("Tries to read!");
-                                int readNow = serial.Read(ret, realRead, rxLen - realRead);
-                                realRead += readNow;
-                                if (bDebugUART)
-                                {
-                                    addLog("Read len: " + realRead + Environment.NewLine);
-                                }
-                                if (realRead == rxLen)
-                                {
-                                    if (bDebugUART)
-                                    {
-                                        addLog("Got UART reply!" + Environment.NewLine);
-                                    }
-                                    return ret;
-                                }
-                            }
-                        }
-                        else
-                        {
-                            //addLog("serial.BytesToRead " + serial.BytesToRead+"");
-                            int ava = serial.BytesToRead;
-                            if (ava > 0)
-                            {
-                                //  addLog("Tries to read!");
-                                int wantsToRead = rxLen - realRead;
-                                if (wantsToRead > ava)
-                                    wantsToRead = ava;
-                                int readNow = serial.Read(ret, realRead, wantsToRead);
-                                realRead += readNow;
-                                if (bDebugUART)
-                                {
-                                    addLog("Read len: " + realRead + Environment.NewLine);
-                                }
-                                if (realRead >= rxLen)
-                                {
-                                    if (bDebugUART)
-                                    {
-                                        addLog("Got UART reply!" + Environment.NewLine);
-                                    }
-                                    return ret;
-                                }
-                            }
-                        }
-                    }
-                    catch (TimeoutException)
-                    {
+                        int wantsToRead = readIncrementally
+                            ? Math.Min(available, rxLen - realRead)
+                            : rxLen - realRead;
+                        int readNow = serial.Read(ret, realRead, wantsToRead);
+                        realRead += readNow;
 
+                        if (bDebugUART)
+                            addLog("Read len: " + realRead + Environment.NewLine);
+
+                        if (realRead >= rxLen)
+                        {
+                            if (bDebugUART)
+                                addLog("Got UART reply!" + Environment.NewLine);
+                            return ret;
+                        }
                     }
-                    catch (Exception ex)
+                    else if (XMODEM.RequiresSerialInputPolling)
                     {
-                        addLog("Got exception: " + ex.ToString() + "!" + Environment.NewLine);
-                        return null;
+                        // Avoid a CPU-burning busy loop while preserving prompt serial handling.
+                        Thread.Sleep(1);
                     }
                 }
-                if (rxLen > 10)
+                catch (TimeoutException)
                 {
-                    addLog("failed with serial.BytesToRead " + serial.BytesToRead + " (expected " + rxLen+")" + Environment.NewLine);
-                    try
-                    {
-                        string s = "";
-                        int loaded = serial.BytesToRead;
-                        for(int k = 0; k < loaded && k < 16; k++)
-                        {
-                            byte dataByte = (byte) serial.ReadByte();
-                            s += dataByte.ToString("X2");
-                        }
-                        addLog("The beginning of buffer in UART contains " + s + " data." + Environment.NewLine);
-                    }
-                    catch(Exception ex)
-                    {
-
-                    }
+                    // Keep collecting until the overall operation deadline expires.
                 }
-                return null;
+                catch (Exception ex)
+                {
+                    addLog("Got exception: " + ex + "!" + Environment.NewLine);
+                    return null;
+                }
+            }
+
+            if (rxLen > 10)
+            {
+                addLog("failed after reading " + realRead + " of " + rxLen
+                    + " bytes (serial.BytesToRead " + serial.BytesToRead + ")" + Environment.NewLine);
+                if (realRead > 0)
+                {
+                    int previewLength = Math.Min(realRead, 16);
+                    string preview = BitConverter.ToString(ret, 0, previewLength).Replace("-", "");
+                    addLog("The beginning of the UART reply contains " + preview + " data." + Environment.NewLine);
+                }
             }
             return null;
         }
