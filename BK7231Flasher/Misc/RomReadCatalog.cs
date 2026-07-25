@@ -105,6 +105,12 @@ namespace BK7231Flasher
             new RomReadOutputSlice("OTP2 AHB", "OTP2_AHB", Bk7258Otp1Size, Bk7258Otp2Size),
         };
         #endregion
+        #region Bouffalo
+        const string BlEfuseSpace = "eFuse byte offsets";
+        const string BlEflashLoaderEfuseBackend = "Bouffalo eflash loader command 0x41";
+        const string Bl616EfuseBackend = "Bouffalo BootROM command 0x41";
+        const string BlEfuseController = "internal eFuse controller";
+        #endregion
         #region LN882x
         const string LnRomSpace = "ROM memory";
         const string LnEfuseSpace = "eFuse shadow/current (CRC16 trailer)";
@@ -208,6 +214,9 @@ namespace BK7231Flasher
             new RomReadTarget(BKType.BK7258, RomReadKind.Rom, "ROM", 0x16000000, 0x10000, 115200, CommonSerialBauds, BekenNonSecureRomSpace, BekenRomBackend, BekenRomController),
             new RomReadTarget(BKType.BK7258, RomReadKind.Efuse, "eFuse", 0x00000000, 0x04, 115200, CommonSerialBauds, Bk7258EfuseSpace, BekenEfuseBackend, Bk7258EfuseController),
             new RomReadTarget(BKType.BK7258, RomReadKind.Otp, "OTP", 0x00000000, Bk7258Otp1Size + Bk7258Otp2Size, 115200, CommonSerialBauds, Bk7258OtpSpace, Bk7258OtpBackend, Bk7258OtpController, outputSlices: Bk7258OtpSlices),
+            new RomReadTarget(BKType.BL602, RomReadKind.Efuse, "eFuse", 0x00000000, 0x80, 921600, CommonSerialBauds, BlEfuseSpace, BlEflashLoaderEfuseBackend, BlEfuseController),
+            new RomReadTarget(BKType.BL702, RomReadKind.Efuse, "eFuse", 0x00000000, 0x80, 921600, CommonSerialBauds, BlEfuseSpace, BlEflashLoaderEfuseBackend, BlEfuseController),
+            new RomReadTarget(BKType.BL616, RomReadKind.Efuse, "eFuse", 0x00000000, 0x200, 921600, CommonSerialBauds, BlEfuseSpace, Bl616EfuseBackend, BlEfuseController),
             new RomReadTarget(BKType.LN882H, RomReadKind.Rom, "ROM", 0x00000000, 0x20000, 115200, CommonSerialBauds, LnRomSpace, LnRamcodeBackend, LnRomController),
             new RomReadTarget(BKType.LN882H, RomReadKind.Otp, "Flash OTP", 0x00000000, 0x400, 115200, CommonSerialBauds, LnFlashOtpSpace, LnRamcodeBackend, LnFlashOtpController, 2, "CRC16"),
             new RomReadTarget(BKType.LN882H, RomReadKind.Efuse, "eFuse", 0x00000000, 0x40, 115200, CommonSerialBauds, LnEfuseSpace, LnRamcodeBackend, LnEfuseController, 2, "CRC16"),

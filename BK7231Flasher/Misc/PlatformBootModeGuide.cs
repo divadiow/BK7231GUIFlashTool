@@ -15,9 +15,9 @@ namespace BK7231Flasher
             { BKType.BK7252, "" },
             { BKType.BK7252N, GetBekenUart1Instructions("BK7252N") },
             { BKType.BK7258, GetBekenUartInstructions("BK7258", "download UART", "DL_UART_TX", "DL_UART_RX") },
-            { BKType.BL602, "" },
-            { BKType.BL702, "" },
-            { BKType.BL616, "" },
+            { BKType.BL602, GetBouffaloInstructions("BL602", "GPIO16", "GPIO7", "GPIO8") },
+            { BKType.BL702, GetBouffaloInstructions("BL702", "GPIO14", "GPIO15", "GPIO28") },
+            { BKType.BL616, GetBouffaloInstructions("BL616", "GPIO21", "GPIO22", "GPIO2") },
             { BKType.LN882H, GetLn882xInstructions("LN882H", "A2", "A3", "BOOT/GPIOA9") },
             { BKType.LN8825, GetLn882xInstructions("LN8825B", "B9", "B8", "BOOT/GPIOA10") },
             { BKType.ESP32, "" },
@@ -68,6 +68,17 @@ namespace BK7231Flasher
                 "- " + bootPin + " -> GND" + System.Environment.NewLine +
                 GetPowerAndGroundInstructions() + System.Environment.NewLine +
                 "With " + bootPin + " held low, unplug the USB-to-TTL adapter from the computer, plug it back in, then power on the 3.3v supply.";
+        }
+
+        static string GetBouffaloInstructions(string platformName, string txPin, string rxPin, string bootPin)
+        {
+            return "Connect the " + platformName + " UART flash download port to a USB-to-TTL serial adapter:" + System.Environment.NewLine +
+                "- Adapter RX -> " + platformName + " TX (" + txPin + ")" + System.Environment.NewLine +
+                "- Adapter TX -> " + platformName + " RX (" + rxPin + ")" + System.Environment.NewLine +
+                "- Adapter GND -> target GND" + System.Environment.NewLine +
+                "- " + bootPin + " -> 3.3 V" + System.Environment.NewLine +
+                GetPowerAndGroundInstructions() + System.Environment.NewLine +
+                "With " + bootPin + " held high, reset the chip or power-cycle the 3.3 V supply, then start the read. If it does not sync, reset or power-cycle it again while the flasher is trying to connect.";
         }
 
         static string GetRtl87x0cInstructions()

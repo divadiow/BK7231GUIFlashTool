@@ -13,7 +13,7 @@ using static BK7231Flasher.BL602Utils;
 
 namespace BK7231Flasher
 {
-    public class BL602Flasher : BaseFlasher
+    public class BL602Flasher : BaseFlasher, IRomReadFlasher
     {
         //int timeoutMs = 10000;
         float flashSizeMB = 2;
@@ -64,7 +64,8 @@ namespace BK7231Flasher
                     if(i % 10 == 1)
                     {
                         addLogLine($"If doing something immediately after another operation, it might not sync for about half a minute");
-                        addLogLine($"Otherwise, please pull high BOOT/{(chipType == BKType.BL602 ? "IO8" : "IO28")} and reset.");
+                        string bootPin = chipType == BKType.BL602 ? "IO8" : chipType == BKType.BL616 ? "GPIO2" : "IO28";
+                        addLogLine($"Otherwise, please pull high BOOT/{bootPin} and reset.");
                     }
                     Thread.Sleep(50);
                 }
@@ -1162,6 +1163,70 @@ namespace BK7231Flasher
             }
             return false;
         }
+
+        public byte[] ReadRomTarget(RomReadTarget target)
+        {
+            try
+            {
+                if(target == null)
+                {
+                    addError("No ROM reader target selected." + Environment.NewLine);
+                    return null;
+                }
+                if(target.Kind != RomReadKind.Efuse)
+                {
+                    addError("Selected Bouffalo read target is not implemented." + Environment.NewLine);
+                    return null;
+                }
+                if(doGenericSetup() == false)
+                {
+                    return null;
+                }
+
+                int offset = target.Address ?? 0;
+                int length = target.Length ?? 0;
+                byte[] payload = new byte[8];
+                Array.Copy(BitConverter.GetBytes(offset), 0, payload, 0, 4);
+                Array.Copy(BitConverter.GetBytes(length), 0, payload, 4, 4);
+
+                string targetKindName = RomReadCatalog.GetKindDisplayName(target.Kind);
+                addLogLine($"Reading {chipType} {targetKindName} via " +
+                    (chipType == BKType.BL616 ? "BootROM" : "eflash loader") + " command 0x41.");
+                logger.setProgress(0, length);
+
+                float readTimeout = getSerialTransferTimeoutSeconds(length + 4, 5.0f);
+                byte[] response = chipType == BKType.BL616
+                    ? executeBootromCommand(0x41, payload, 0, payload.Length, readTimeout, 2, true)
+                    : executeCommand(0x41, payload, 0, payload.Length, true, readTimeout, 2, true);
+                if(response == null || response.Length != length + 2)
+                {
+                    int receivedLength = response == null ? 0 : Math.Max(0, response.Length - 2);
+                    throw new IOException($"{chipType} eFuse read returned {receivedLength} bytes; expected {length}.");
+                }
+
+                byte[] result = new byte[length];
+                Array.Copy(response, 2, result, 0, length);
+                logger.setProgress(length, length);
+                return result;
+            }
+            catch(OperationCanceledException)
+            {
+                addLogLine("eFuse read cancelled by user.");
+                logger.setState("Cancelled", Color.DarkGray);
+                return null;
+            }
+            catch(Exception ex)
+            {
+                addError("eFuse read failed: " + ex.Message + Environment.NewLine);
+                logger.setState("eFuse read failed.", Color.Red);
+                return null;
+            }
+            finally
+            {
+                try { closePort(); } catch { }
+            }
+        }
+
         MemoryStream ms;
 
         public BL602Flasher(CancellationToken ct) : base(ct)
