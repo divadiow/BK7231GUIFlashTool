@@ -106,6 +106,11 @@ namespace BK7231Flasher
         };
         #endregion
         #region Bouffalo
+        // ROM reads stay in BootROM at BLDC's 500000 boot baud; no eflash-loader baud switch occurs.
+        static readonly int[] BlBootromSerialBauds = new int[] { 500000 };
+        const string BlRomMirrorSpace = "Boot ROM read mirror";
+        const string BlBootromReadBackend = "Bouffalo BootROM command 0x51";
+        const string BlRomController = "direct memory read";
         const string BlEfuseSpace = "eFuse byte offsets";
         const string BlEflashLoaderEfuseBackend = "Bouffalo eflash loader command 0x41";
         const string Bl616EfuseBackend = "Bouffalo BootROM command 0x41";
@@ -214,8 +219,13 @@ namespace BK7231Flasher
             new RomReadTarget(BKType.BK7258, RomReadKind.Rom, "ROM", 0x16000000, 0x10000, 115200, CommonSerialBauds, BekenNonSecureRomSpace, BekenRomBackend, BekenRomController),
             new RomReadTarget(BKType.BK7258, RomReadKind.Efuse, "eFuse", 0x00000000, 0x04, 115200, CommonSerialBauds, Bk7258EfuseSpace, BekenEfuseBackend, Bk7258EfuseController),
             new RomReadTarget(BKType.BK7258, RomReadKind.Otp, "OTP", 0x00000000, Bk7258Otp1Size + Bk7258Otp2Size, 115200, CommonSerialBauds, Bk7258OtpSpace, Bk7258OtpBackend, Bk7258OtpController, outputSlices: Bk7258OtpSlices),
+            // Command 0x51 rejects the documented BL602 ROM base but exposes this complete 128 KiB mirror.
+            new RomReadTarget(BKType.BL602, RomReadKind.Rom, "ROM", 0x21020000, 0x20000, 500000, BlBootromSerialBauds, BlRomMirrorSpace, BlBootromReadBackend, BlRomController),
             new RomReadTarget(BKType.BL602, RomReadKind.Efuse, "eFuse", 0x00000000, 0x80, 921600, CommonSerialBauds, BlEfuseSpace, BlEflashLoaderEfuseBackend, BlEfuseController),
+            // Command 0x51 likewise exposes the complete 192 KiB BL702 ROM through this mirror.
+            new RomReadTarget(BKType.BL702, RomReadKind.Rom, "ROM", 0x21040000, 0x30000, 500000, BlBootromSerialBauds, BlRomMirrorSpace, BlBootromReadBackend, BlRomController),
             new RomReadTarget(BKType.BL702, RomReadKind.Efuse, "eFuse", 0x00000000, 0x80, 921600, CommonSerialBauds, BlEfuseSpace, BlEflashLoaderEfuseBackend, BlEfuseController),
+            // BL616 BootROM command 0x51 reads RAM but rejects its 0x90000000 ROM window; a RAM helper is required.
             new RomReadTarget(BKType.BL616, RomReadKind.Efuse, "eFuse", 0x00000000, 0x200, 921600, CommonSerialBauds, BlEfuseSpace, Bl616EfuseBackend, BlEfuseController),
             new RomReadTarget(BKType.LN882H, RomReadKind.Rom, "ROM", 0x00000000, 0x20000, 115200, CommonSerialBauds, LnRomSpace, LnRamcodeBackend, LnRomController),
             new RomReadTarget(BKType.LN882H, RomReadKind.Otp, "Flash OTP", 0x00000000, 0x400, 115200, CommonSerialBauds, LnFlashOtpSpace, LnRamcodeBackend, LnFlashOtpController, 2, "CRC16"),

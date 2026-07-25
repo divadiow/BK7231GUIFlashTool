@@ -27,6 +27,7 @@ namespace BK7231Flasher
         const int BL_FLASH_CMD_OVERHEAD = 8;
         const int BL_FLASH_READ_CHUNK = BL_FLASH_TX_SIZE - BL_FLASH_CMD_OVERHEAD;
         const int BL_FLASH_WRITE_DATA_CHUNK = BL_FLASH_TX_SIZE - BL_FLASH_CMD_OVERHEAD;
+        const int BL_ROM_READ_CHUNK = 0x100;
         const int BL_SYNC_WAIT_MS = 1000;
         const double BL602_SYNC_BURST_SECONDS = 0.006;
         const double BL702_SYNC_BURST_SECONDS = 0.003;
@@ -827,7 +828,7 @@ namespace BK7231Flasher
             return true;
         }
 
-        bool doGenericSetup()
+        bool doGenericSetup(bool bIsBootromOnly = false)
         {
             addLog("Now is: " + DateTime.Now.ToLongDateString() + " " + DateTime.Now.ToLongTimeString() + "." + Environment.NewLine);
             addLog("Flasher mode: " + chipType + Environment.NewLine);
@@ -851,7 +852,7 @@ namespace BK7231Flasher
 
             if(this.Sync() == false)
             {
-                if(tryAttachToExistingEflashLoader(initialBootBaudrate))
+                if(!bIsBootromOnly && tryAttachToExistingEflashLoader(initialBootBaudrate))
                 {
                     return true;
                 }
@@ -860,7 +861,7 @@ namespace BK7231Flasher
             }
             if (this.getAndPrintInfo() == null)
             {
-                if(tryAttachToExistingEflashLoader(initialBootBaudrate))
+                if(!bIsBootromOnly && tryAttachToExistingEflashLoader(initialBootBaudrate))
                 {
                     return true;
                 }
@@ -873,6 +874,10 @@ namespace BK7231Flasher
             {
                 addErrorLine($"Selected chip type is {chipType}, but current chip type is {blinfo?.Variant}. Aborted.");
                 return false;
+            }
+            if(bIsBootromOnly)
+            {
+                return true;
             }
             if(blinfo.Variant == BKType.BL616)
             {
@@ -1164,6 +1169,33 @@ namespace BK7231Flasher
             return false;
         }
 
+        byte[] readBootromMemory(int offset, int length)
+        {
+            byte[] result = new byte[length];
+            int completed = 0;
+            while(completed < length)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                int chunkLength = Math.Min(BL_ROM_READ_CHUNK, length - completed);
+                byte[] payload = new byte[8];
+                Array.Copy(BitConverter.GetBytes(offset + completed), 0, payload, 0, 4);
+                Array.Copy(BitConverter.GetBytes(chunkLength), 0, payload, 4, 4);
+
+                float readTimeout = getSerialTransferTimeoutSeconds(chunkLength + 4, 5.0f);
+                byte[] response = executeBootromCommand(0x51, payload, 0, payload.Length, readTimeout, 2, true);
+                if(response == null || response.Length != chunkLength + 2)
+                {
+                    int receivedLength = response == null ? 0 : Math.Max(0, response.Length - 2);
+                    throw new IOException($"{chipType} ROM read at 0x{offset + completed:X8} returned {receivedLength} bytes; expected {chunkLength}.");
+                }
+
+                Array.Copy(response, 2, result, completed, chunkLength);
+                completed += chunkLength;
+                logger.setProgress(completed, length);
+            }
+            return result;
+        }
+
         public byte[] ReadRomTarget(RomReadTarget target)
         {
             try
@@ -1173,23 +1205,31 @@ namespace BK7231Flasher
                     addError("No ROM reader target selected." + Environment.NewLine);
                     return null;
                 }
-                if(target.Kind != RomReadKind.Efuse)
+                if(target.Kind != RomReadKind.Rom && target.Kind != RomReadKind.Efuse)
                 {
                     addError("Selected Bouffalo read target is not implemented." + Environment.NewLine);
                     return null;
                 }
-                if(doGenericSetup() == false)
+                bool bIsRomRead = target.Kind == RomReadKind.Rom;
+                if(doGenericSetup(bIsRomRead) == false)
                 {
                     return null;
                 }
 
                 int offset = target.Address ?? 0;
                 int length = target.Length ?? 0;
+                string targetKindName = RomReadCatalog.GetKindDisplayName(target.Kind);
+                if(bIsRomRead)
+                {
+                    addLogLine($"Reading {chipType} {targetKindName} via BootROM command 0x51.");
+                    logger.setProgress(0, length);
+                    return readBootromMemory(offset, length);
+                }
+
                 byte[] payload = new byte[8];
                 Array.Copy(BitConverter.GetBytes(offset), 0, payload, 0, 4);
                 Array.Copy(BitConverter.GetBytes(length), 0, payload, 4, 4);
 
-                string targetKindName = RomReadCatalog.GetKindDisplayName(target.Kind);
                 addLogLine($"Reading {chipType} {targetKindName} via " +
                     (chipType == BKType.BL616 ? "BootROM" : "eflash loader") + " command 0x41.");
                 logger.setProgress(0, length);
@@ -1211,14 +1251,16 @@ namespace BK7231Flasher
             }
             catch(OperationCanceledException)
             {
-                addLogLine("eFuse read cancelled by user.");
+                string targetKindName = target == null ? "Bouffalo" : RomReadCatalog.GetKindDisplayName(target.Kind);
+                addLogLine($"{targetKindName} read cancelled by user.");
                 logger.setState("Cancelled", Color.DarkGray);
                 return null;
             }
             catch(Exception ex)
             {
-                addError("eFuse read failed: " + ex.Message + Environment.NewLine);
-                logger.setState("eFuse read failed.", Color.Red);
+                string targetKindName = target == null ? "Bouffalo" : RomReadCatalog.GetKindDisplayName(target.Kind);
+                addError($"{targetKindName} read failed: " + ex.Message + Environment.NewLine);
+                logger.setState($"{targetKindName} read failed.", Color.Red);
                 return null;
             }
             finally
