@@ -94,7 +94,7 @@ namespace BK7231Flasher
                 Dock = DockStyle.Top,
                 Height = 28,
                 TextAlign = ContentAlignment.MiddleLeft,
-                Text = "Drop a BL602 full flash dump here, or open one. I/O assignments and optional non-assignment diagnostics are reported separately.",
+                Text = "Drop a BL602 full flash dump here, or open one. I/O evidence and optional non-assignment diagnostics are reported separately.",
                 AutoEllipsis = true,
             };
 

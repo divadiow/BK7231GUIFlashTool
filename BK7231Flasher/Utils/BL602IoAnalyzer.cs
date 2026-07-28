@@ -20,6 +20,10 @@ namespace BK7231Flasher
     {
         private const uint FdtMagic = 0xD00DFEED;
         private static readonly byte[] FdtMagicBytes = { 0xD0, 0x0D, 0xFE, 0xED };
+        private static readonly byte[] PartitionMagicBytes = { (byte)'B', (byte)'F', (byte)'P', (byte)'T' };
+        private const int PartitionHeaderSize = 16;
+        private const int PartitionEntrySize = 36;
+        private const int FlashSectorSize = 0x1000;
         private const uint FdtBeginNode = 1;
         private const uint FdtEndNode = 2;
         private const uint FdtProp = 3;
@@ -62,11 +66,46 @@ namespace BK7231Flasher
             public string Compatible { get; set; }
         }
 
+        public sealed class PartitionEntrySummary
+        {
+            public string Name { get; set; }
+            public uint Address { get; set; }
+            public uint Length { get; set; }
+            public int ActiveSlot { get; set; }
+        }
+
+        public sealed class PartitionTableSummary
+        {
+            public int Offset { get; set; }
+            public uint Age { get; set; }
+            public int ValidCopyCount { get; set; }
+            public List<PartitionEntrySummary> Entries { get; } = new List<PartitionEntrySummary>();
+        }
+
+        public sealed class PersistentConfigSummary
+        {
+            public uint Offset { get; set; }
+            public uint Length { get; set; }
+            public string Format { get; set; }
+            public int NamedEntryCount { get; set; }
+            public List<string> HardwareKeyNames { get; } = new List<string>();
+            public List<PersistentConfigRecordSummary> InterestingRecords { get; } =
+                new List<PersistentConfigRecordSummary>();
+        }
+
+        public sealed class PersistentConfigRecordSummary
+        {
+            public string Name { get; set; }
+            public string Value { get; set; }
+        }
+
         public sealed class AnalysisResult
         {
             public string DisplayName { get; set; }
             public int FileSize { get; set; }
             public List<DtbSummary> Dtbs { get; } = new List<DtbSummary>();
+            public List<PartitionTableSummary> PartitionTables { get; } = new List<PartitionTableSummary>();
+            public List<PersistentConfigSummary> PersistentConfigs { get; } = new List<PersistentConfigSummary>();
             public List<string> ProductIds { get; } = new List<string>();
             public List<string> ApplicationMarkers { get; } = new List<string>();
             public List<Finding> Findings { get; } = new List<Finding>();
@@ -83,6 +122,37 @@ namespace BK7231Flasher
                 StringBuilder builder = new StringBuilder();
                 builder.AppendLine("BL602 I/O findings");
                 builder.AppendLine(new string('=', 78));
+                builder.AppendLine("Evidence report only — not a ready-to-use template.");
+                builder.AppendLine("Firmware-configured pins do not prove populated hardware or polarity.");
+                builder.AppendLine("The mapping may be incomplete. Verify before use.");
+
+                List<Finding> selected = Findings
+                    .OrderBy(item => item.Pin)
+                    .ThenByDescending(item => item.ConfidenceLevel)
+                    .ThenBy(item => item.Function, StringComparer.OrdinalIgnoreCase)
+                    .ThenBy(item => item.Source, StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                if (selected.Count != 0)
+                {
+                    builder.AppendLine();
+                    builder.AppendLine("I/O table");
+                    builder.AppendLine(new string('-', 130));
+                    builder.AppendLine(Fixed("GPIO", 7) + Fixed("Observed use / likely function", 40) + Fixed("Confidence", 13) + Fixed("Source", 34) + "Evidence");
+                    builder.AppendLine(new string('-', 130));
+                    foreach (Finding item in selected)
+                    {
+                        builder.Append(Fixed("GPIO" + item.Pin.ToString(CultureInfo.InvariantCulture), 7));
+                        builder.Append(Fixed(item.Function, 40));
+                        builder.Append(Fixed(ConfidenceLabel(item.ConfidenceLevel), 13));
+                        builder.Append(Fixed(item.Source, 34));
+                        builder.AppendLine(item.Evidence ?? string.Empty);
+                    }
+                }
+
+                builder.AppendLine();
+                builder.AppendLine("Analysis summary");
+                builder.AppendLine(new string('-', 78));
                 builder.AppendLine("File: " + DisplayName);
                 builder.AppendLine("Size: " + FileSize.ToString("N0", CultureInfo.InvariantCulture) + " bytes");
                 builder.AppendLine("DTB candidates: " + Dtbs.Count.ToString(CultureInfo.InvariantCulture));
@@ -99,6 +169,55 @@ namespace BK7231Flasher
                         ApplicationScanStart,
                         ApplicationScanEnd,
                         DecodedInstructionCount));
+                }
+
+                if (PartitionTables.Count != 0)
+                {
+                    builder.AppendLine();
+                    builder.AppendLine("Flash layout");
+                    builder.AppendLine(new string('-', 78));
+                    foreach (PartitionTableSummary table in PartitionTables)
+                    {
+                        builder.Append("Validated BFPT @ 0x")
+                            .Append(table.Offset.ToString("X8", CultureInfo.InvariantCulture))
+                            .Append(", age ").Append(table.Age.ToString(CultureInfo.InvariantCulture))
+                            .Append(", ").Append(table.Entries.Count.ToString(CultureInfo.InvariantCulture))
+                            .Append(" partition(s)");
+                        if (table.ValidCopyCount > 1)
+                            builder.Append(", ").Append(table.ValidCopyCount.ToString(CultureInfo.InvariantCulture)).Append(" CRC-valid copies; newest selected");
+                        builder.AppendLine();
+                        foreach (PartitionEntrySummary partition in table.Entries)
+                        {
+                            builder.Append("  ").Append(Fixed(partition.Name, 10))
+                                .Append(" 0x").Append(partition.Address.ToString("X8", CultureInfo.InvariantCulture))
+                                .Append(" + 0x").Append(partition.Length.ToString("X", CultureInfo.InvariantCulture))
+                                .AppendLine();
+                        }
+                    }
+                }
+
+                if (PersistentConfigs.Count != 0)
+                {
+                    builder.AppendLine();
+                    builder.AppendLine("Persistent configuration");
+                    builder.AppendLine(new string('-', 78));
+                    foreach (PersistentConfigSummary config in PersistentConfigs)
+                    {
+                        builder.Append(config.Format)
+                            .Append(" @ 0x").Append(config.Offset.ToString("X8", CultureInfo.InvariantCulture))
+                            .Append(": ").Append(config.NamedEntryCount.ToString(CultureInfo.InvariantCulture))
+                            .AppendLine(" validated record name" + (config.NamedEntryCount == 1 ? string.Empty : "s"));
+                        if (config.InterestingRecords.Count == 0)
+                        {
+                            builder.AppendLine("  No hardware-related records found.");
+                        }
+                        else
+                        {
+                            builder.AppendLine("  Hardware-related persistent records:");
+                            foreach (PersistentConfigRecordSummary record in config.InterestingRecords)
+                                builder.AppendLine("    " + record.Name + " = " + record.Value);
+                        }
+                    }
                 }
 
                 if (Dtbs.Count != 0)
@@ -119,35 +238,6 @@ namespace BK7231Flasher
                             builder.AppendLine("  Model: " + dtb.Model);
                         if (!string.IsNullOrWhiteSpace(dtb.Compatible))
                             builder.AppendLine("  Compatible: " + dtb.Compatible);
-                    }
-                }
-
-                List<Finding> selected = Findings
-                    .OrderBy(item => item.Pin)
-                    .ThenByDescending(item => item.ConfidenceLevel)
-                    .ThenBy(item => item.Function, StringComparer.OrdinalIgnoreCase)
-                    .ThenBy(item => item.Source, StringComparer.OrdinalIgnoreCase)
-                    .ToList();
-
-                builder.AppendLine();
-                builder.AppendLine("I/O table");
-                builder.AppendLine(new string('-', 130));
-                builder.AppendLine(Fixed("GPIO", 7) + Fixed("Observed use / likely function", 40) + Fixed("Confidence", 13) + Fixed("Source", 34) + "Evidence");
-                builder.AppendLine(new string('-', 130));
-
-                if (selected.Count == 0)
-                {
-                    builder.AppendLine("No reportable I/O findings were found.");
-                }
-                else
-                {
-                    foreach (Finding item in selected)
-                    {
-                        builder.Append(Fixed("GPIO" + item.Pin.ToString(CultureInfo.InvariantCulture), 7));
-                        builder.Append(Fixed(item.Function, 40));
-                        builder.Append(Fixed(ConfidenceLabel(item.ConfidenceLevel), 13));
-                        builder.Append(Fixed(item.Source, 34));
-                        builder.AppendLine(item.Evidence ?? string.Empty);
                     }
                 }
 
@@ -272,6 +362,11 @@ namespace BK7231Flasher
             public string Method;
         }
 
+        private sealed class GpioConfigPrimitiveProof
+        {
+            public string Kind;
+        }
+
         private sealed class DirectPwmCandidate
         {
             public List<int> CallSites = new List<int>();
@@ -340,6 +435,8 @@ namespace BK7231Flasher
                 DisplayName = string.IsNullOrWhiteSpace(displayName) ? "(buffer)" : displayName,
                 FileSize = data.Length,
             };
+
+            ExtractStorageSummaries(data, result);
 
             List<DtbHeader> headers = FindDtbs(data);
             foreach (DtbHeader header in headers)
@@ -429,6 +526,309 @@ namespace BK7231Flasher
                 (data[offset + 1] << 8) |
                 (data[offset + 2] << 16) |
                 (data[offset + 3] << 24));
+        }
+
+        private static void ExtractStorageSummaries(byte[] data, AnalysisResult result)
+        {
+            List<PartitionTableSummary> tables = FindPartitionTables(data);
+            if (tables.Count == 0)
+                return;
+
+            PartitionTableSummary selected = tables
+                .OrderByDescending(item => item.Age)
+                .ThenBy(item => item.Offset)
+                .First();
+            selected.ValidCopyCount = tables.Count;
+            result.PartitionTables.Add(selected);
+
+            PartitionEntrySummary psm = selected.Entries.FirstOrDefault(item =>
+                string.Equals(item.Name, "PSM", StringComparison.OrdinalIgnoreCase));
+            if (psm == null || psm.Length == 0)
+                return;
+
+            long psmEnd = (long)psm.Address + psm.Length;
+            if (psm.Address >= data.Length || psmEnd > data.Length)
+            {
+                result.Notes.Add("The validated PSM partition is not fully present in the supplied data.");
+                return;
+            }
+
+            Dictionary<string, byte[]> records;
+            string format;
+            int start = (int)psm.Address;
+            int end = (int)psmEnd;
+            if (TryReadEasyFlashRecords(data, start, end, out records))
+                format = "EasyFlash GRAN=8 PSM";
+            else if (TryReadLegacyEnvironmentRecords(data, start, end, out records))
+                format = "Legacy key=value PSM";
+            else
+                return;
+
+            PersistentConfigSummary config = new PersistentConfigSummary
+            {
+                Offset = psm.Address,
+                Length = psm.Length,
+                Format = format,
+                NamedEntryCount = records.Count,
+            };
+            config.HardwareKeyNames.AddRange(records.Keys
+                .Where(IsHardwareLookingKeyName)
+                .OrderBy(item => item, StringComparer.Ordinal));
+            foreach (string keyName in config.HardwareKeyNames)
+            {
+                config.InterestingRecords.Add(new PersistentConfigRecordSummary
+                {
+                    Name = keyName,
+                    Value = FormatPersistentConfigValue(records[keyName]),
+                });
+            }
+            result.PersistentConfigs.Add(config);
+
+            if (config.HardwareKeyNames.Count != 0)
+            {
+                AddDiagnostic(result, format + " contains hardware-looking key name(s) [" +
+                    string.Join(", ", config.HardwareKeyNames) +
+                    "]; names alone do not establish their value schema or a GPIO assignment.");
+            }
+        }
+
+        private static List<PartitionTableSummary> FindPartitionTables(byte[] data)
+        {
+            List<PartitionTableSummary> results = new List<PartitionTableSummary>();
+            int position = 0;
+            while (position + PartitionHeaderSize <= data.Length)
+            {
+                int offset = IndexOf(data, PartitionMagicBytes, position, data.Length);
+                if (offset < 0)
+                    break;
+
+                PartitionTableSummary table;
+                if (TryParsePartitionTable(data, offset, out table))
+                    results.Add(table);
+                position = offset + 4;
+            }
+            return results;
+        }
+
+        private static bool TryParsePartitionTable(byte[] data, int offset, out PartitionTableSummary table)
+        {
+            table = null;
+            if (offset < 0 || offset + PartitionHeaderSize > data.Length)
+                return false;
+
+            int count = ReadLe16(data, offset + 6);
+            if (count < 1 || count > 16)
+                return false;
+            int entriesLength = count * PartitionEntrySize;
+            int tableEnd = offset + PartitionHeaderSize + entriesLength + 4;
+            if (tableEnd > data.Length)
+                return false;
+
+            uint headerCrc = ReadLe32(data, offset + 12);
+            uint entriesCrc = ReadLe32(data, offset + PartitionHeaderSize + entriesLength);
+            if (Crc32Ieee(data, offset, 12) != headerCrc ||
+                Crc32Ieee(data, offset + PartitionHeaderSize, entriesLength) != entriesCrc)
+                return false;
+
+            PartitionTableSummary parsed = new PartitionTableSummary
+            {
+                Offset = offset,
+                Age = ReadLe32(data, offset + 8),
+            };
+            for (int index = 0; index < count; index++)
+            {
+                int entryOffset = offset + PartitionHeaderSize + index * PartitionEntrySize;
+                int nameLength = 0;
+                while (nameLength < 8 && data[entryOffset + 3 + nameLength] != 0)
+                {
+                    byte value = data[entryOffset + 3 + nameLength];
+                    if (value < 0x20 || value > 0x7E)
+                        return false;
+                    nameLength++;
+                }
+                if (nameLength == 0)
+                    return false;
+
+                int activeSlot = data[entryOffset + 2] == 1 ? 1 : 0;
+                uint address = ReadLe32(data, entryOffset + (activeSlot == 1 ? 16 : 12));
+                uint length = ReadLe32(data, entryOffset + (activeSlot == 1 ? 24 : 20));
+                parsed.Entries.Add(new PartitionEntrySummary
+                {
+                    Name = Encoding.ASCII.GetString(data, entryOffset + 3, nameLength),
+                    Address = address,
+                    Length = length,
+                    ActiveSlot = activeSlot,
+                });
+            }
+
+            table = parsed;
+            return true;
+        }
+
+        private static bool TryReadEasyFlashRecords(
+            byte[] data,
+            int start,
+            int end,
+            out Dictionary<string, byte[]> records)
+        {
+            records = new Dictionary<string, byte[]>(StringComparer.Ordinal);
+            bool foundHeader = false;
+            for (int sector = start; sector <= end - FlashSectorSize; sector += FlashSectorSize)
+            {
+                if (data[sector + 8] != (byte)'E' || data[sector + 9] != (byte)'F' ||
+                    data[sector + 10] != (byte)'4' ||
+                    (data[sector + 11] != (byte)'0' && data[sector + 11] != (byte)'1'))
+                    continue;
+
+                foundHeader = true;
+                int position = sector + 0x14;
+                int sectorEnd = sector + FlashSectorSize;
+                while (position + 28 <= sectorEnd)
+                {
+                    if (data[position] == 0xFF)
+                        break;
+                    uint totalLengthValue = ReadLe32(data, position + 12);
+                    if (totalLengthValue < 28 || totalLengthValue > int.MaxValue)
+                        break;
+                    int totalLength = (int)totalLengthValue;
+                    if (totalLength > sectorEnd - position)
+                        break;
+
+                    if (data[position] == 0 && data[position + 1] == 0 &&
+                        data[position + 8] == (byte)'K' && data[position + 9] == (byte)'V' &&
+                        data[position + 10] == (byte)'4' && data[position + 11] == (byte)'0')
+                    {
+                        int nameLength = data[position + 20];
+                        uint valueLengthValue = ReadLe32(data, position + 24);
+                        if (valueLengthValue <= int.MaxValue)
+                        {
+                            int valueLength = (int)valueLengthValue;
+                            long payloadLengthValue = 8L + nameLength + valueLength;
+                            if (nameLength > 0 && nameLength <= 64 &&
+                                payloadLengthValue <= int.MaxValue &&
+                                28L + nameLength + valueLength <= totalLength &&
+                                position + 20L + payloadLengthValue <= sectorEnd &&
+                                position + 28 + nameLength <= sectorEnd &&
+                                IsConfigKeyName(data, position + 28, nameLength))
+                            {
+                                int payloadLength = (int)payloadLengthValue;
+                                if (Crc32Ieee(data, position + 20, payloadLength) == ReadLe32(data, position + 16))
+                                {
+                                    string keyName = Encoding.ASCII.GetString(data, position + 28, nameLength);
+                                    byte[] value = new byte[valueLength];
+                                    Array.Copy(data, position + 28 + nameLength, value, 0, valueLength);
+                                    records[keyName] = value;
+                                }
+                            }
+                        }
+                    }
+                    position += totalLength;
+                }
+            }
+            return foundHeader;
+        }
+
+        private static bool TryReadLegacyEnvironmentRecords(
+            byte[] data,
+            int start,
+            int end,
+            out Dictionary<string, byte[]> records)
+        {
+            records = new Dictionary<string, byte[]>(StringComparer.Ordinal);
+            int position = start;
+            while (position < end)
+            {
+                while (position < end && (data[position] < 0x20 || data[position] > 0x7E))
+                    position++;
+                int textStart = position;
+                while (position < end && data[position] >= 0x20 && data[position] <= 0x7E)
+                    position++;
+                int textLength = position - textStart;
+                if (textLength < 3)
+                    continue;
+
+                int equals = Array.IndexOf(data, (byte)'=', textStart, Math.Min(textLength, 65));
+                if (equals <= textStart)
+                    continue;
+                int nameLength = equals - textStart;
+                if (IsConfigKeyName(data, textStart, nameLength))
+                {
+                    string keyName = Encoding.ASCII.GetString(data, textStart, nameLength);
+                    int valueStart = equals + 1;
+                    int valueLength = textStart + textLength - valueStart;
+                    byte[] value = new byte[valueLength];
+                    Array.Copy(data, valueStart, value, 0, valueLength);
+                    records[keyName] = value;
+                }
+            }
+            return records.Count != 0;
+        }
+
+        private static string FormatPersistentConfigValue(byte[] value)
+        {
+            if (value.Length == 0)
+                return "(empty)";
+            if (value.Length <= 64 && IsPrintableAscii(value, 0, value.Length))
+            {
+                string text = Encoding.ASCII.GetString(value)
+                    .Replace("\\", "\\\\")
+                    .Replace("\"", "\\\"");
+                return "\"" + text + "\"";
+            }
+            if (value.Length == 1)
+                return value[0].ToString(CultureInfo.InvariantCulture) + " (uint8)";
+            if (value.Length == 2)
+                return ReadLe16(value, 0).ToString(CultureInfo.InvariantCulture) +
+                    " (possible little-endian uint16)";
+            if (value.Length == 4)
+                return ReadLe32(value, 0).ToString(CultureInfo.InvariantCulture) +
+                    " (possible little-endian uint32)";
+
+            int shown = Math.Min(value.Length, 16);
+            string hex = string.Concat(value.Take(shown)
+                .Select(item => item.ToString("X2", CultureInfo.InvariantCulture)));
+            if (shown != value.Length)
+                hex += "… (+" + (value.Length - shown).ToString(CultureInfo.InvariantCulture) + " bytes)";
+            return "0x" + hex;
+        }
+
+        private static bool IsConfigKeyName(byte[] data, int offset, int length)
+        {
+            if (length < 1 || length > 64 || offset < 0 || offset + length > data.Length)
+                return false;
+            for (int index = 0; index < length; index++)
+            {
+                byte value = data[offset + index];
+                bool accepted = (value >= (byte)'a' && value <= (byte)'z') ||
+                    (value >= (byte)'A' && value <= (byte)'Z') ||
+                    (value >= (byte)'0' && value <= (byte)'9') ||
+                    value == (byte)'_' || value == (byte)'-' || value == (byte)'.';
+                if (!accepted)
+                    return false;
+            }
+            return true;
+        }
+
+        private static bool IsHardwareLookingKeyName(string keyName)
+        {
+            string value = keyName.ToLowerInvariant();
+            return value.Contains("gpio") ||
+                value.Contains("pin_cfg") ||
+                value.EndsWith("_pin", StringComparison.Ordinal) ||
+                value.EndsWith("pin_pin", StringComparison.Ordinal) ||
+                Regex.IsMatch(value, @"(^|[_-])pin([_-]|$)", RegexOptions.CultureInvariant);
+        }
+
+        private static uint Crc32Ieee(byte[] data, int offset, int length)
+        {
+            uint crc = 0xFFFFFFFF;
+            for (int index = 0; index < length; index++)
+            {
+                crc ^= data[offset + index];
+                for (int bit = 0; bit < 8; bit++)
+                    crc = (crc & 1) != 0 ? (crc >> 1) ^ 0xEDB88320 : crc >> 1;
+            }
+            return crc ^ 0xFFFFFFFF;
         }
 
         private static int Align4(int value)
@@ -1656,7 +2056,41 @@ namespace BK7231Flasher
             return kinds;
         }
 
-        private static string ClassifyGpioConfigPrimitive(
+        private static GpioConfigPrimitiveProof ClassifyStackGpioConfig(
+            Dictionary<int, int> pinOffsets,
+            Dictionary<int, byte> stackBytes,
+            HashSet<int> pointerOffsets)
+        {
+            foreach (KeyValuePair<int, int> pinOffset in pinOffsets)
+            {
+                int baseOffset = pinOffset.Key;
+                if (!pointerOffsets.Contains(baseOffset) ||
+                    !stackBytes.TryGetValue(baseOffset + 1, out byte function) ||
+                    !stackBytes.TryGetValue(baseOffset + 2, out byte mode) || mode > 1 ||
+                    !stackBytes.TryGetValue(baseOffset + 4, out byte drive) || drive != 0 ||
+                    !stackBytes.TryGetValue(baseOffset + 5, out byte schmitt) || schmitt != 1)
+                {
+                    continue;
+                }
+                if (function == 11 && pinOffset.Value == 0)
+                {
+                    return new GpioConfigPrimitiveProof
+                    {
+                        Kind = mode == 0 ? "input-config" : "output-config",
+                    };
+                }
+                if (function == 8 && mode == 1 && pinOffset.Value == 1)
+                {
+                    return new GpioConfigPrimitiveProof
+                    {
+                        Kind = "pwm-config",
+                    };
+                }
+            }
+            return null;
+        }
+
+        private static GpioConfigPrimitiveProof ClassifyGpioConfigPrimitive(
             List<RvInstruction> instructions,
             int startIndex,
             int endIndex)
@@ -1666,11 +2100,21 @@ namespace BK7231Flasher
             // helpers build it on the stack with function=11 (SW GPIO),
             // mode=0/1, drive=0 and Schmitt=1 before calling GLB_GPIO_Init.
             Dictionary<int, int> constants = new Dictionary<int, int> { [0] = 0 };
-            HashSet<int> entryPinRegisters = new HashSet<int> { 10 };
+            Dictionary<int, int> entryPinRegisters = new Dictionary<int, int>
+            {
+                [10] = 0,
+                [11] = 1,
+                [12] = 2,
+            };
+            // A cold error block may reuse a1 before the address-ordered
+            // success block stores the original PWM pin argument.
+            Dictionary<int, int> directEntryPinRegisters = new Dictionary<int, int>
+            {
+                [11] = 1,
+            };
             Dictionary<int, byte> stackBytes = new Dictionary<int, byte>();
-            HashSet<int> pinOffsets = new HashSet<int>();
+            Dictionary<int, int> pinOffsets = new Dictionary<int, int>();
             HashSet<int> pointerOffsets = new HashSet<int>();
-            HashSet<int> calledPointerOffsets = new HashSet<int>();
 
             int limit = Math.Min(endIndex, startIndex + 96);
             for (int index = startIndex; index < limit; index++)
@@ -1681,10 +2125,16 @@ namespace BK7231Flasher
                     instruction.StoreWidth.HasValue)
                 {
                     int stackOffset = instruction.Imm.Value;
-                    if (entryPinRegisters.Contains(instruction.Rs2.Value) &&
-                        instruction.StoreWidth.Value == 1)
+                    bool pinSource = entryPinRegisters.TryGetValue(
+                        instruction.Rs2.Value, out int pinArgument);
+                    if (!pinSource)
                     {
-                        pinOffsets.Add(stackOffset);
+                        pinSource = directEntryPinRegisters.TryGetValue(
+                            instruction.Rs2.Value, out pinArgument);
+                    }
+                    if (pinSource && instruction.StoreWidth.Value == 1)
+                    {
+                        pinOffsets[stackOffset] = pinArgument;
                     }
                     else if (constants.TryGetValue(instruction.Rs2.Value, out int stored))
                     {
@@ -1697,9 +2147,14 @@ namespace BK7231Flasher
                 }
 
                 if (instruction.Call)
-                    calledPointerOffsets.UnionWith(pointerOffsets);
+                {
+                    GpioConfigPrimitiveProof proof =
+                        ClassifyStackGpioConfig(pinOffsets, stackBytes, pointerOffsets);
+                    if (proof != null)
+                        return proof;
+                }
 
-                HashSet<int> nextPinRegisters = new HashSet<int>(entryPinRegisters);
+                Dictionary<int, int> nextPinRegisters = new Dictionary<int, int>(entryPinRegisters);
                 if (instruction.Rd.HasValue && instruction.Rd.Value != 0)
                     nextPinRegisters.Remove(instruction.Rd.Value);
 
@@ -1716,8 +2171,11 @@ namespace BK7231Flasher
                     else
                         constants.Remove(instruction.Rd.Value);
 
-                    if (entryPinRegisters.Contains(instruction.Rs1.Value) && instruction.Imm.Value == 0)
-                        nextPinRegisters.Add(instruction.Rd.Value);
+                    if (entryPinRegisters.TryGetValue(instruction.Rs1.Value, out int sourceArgument) &&
+                        instruction.Imm.Value == 0)
+                    {
+                        nextPinRegisters[instruction.Rd.Value] = sourceArgument;
+                    }
                     if (instruction.Rd.Value == 10 && instruction.Rs1.Value == 2)
                         pointerOffsets.Add(instruction.Imm.Value);
                 }
@@ -1727,30 +2185,19 @@ namespace BK7231Flasher
                         constants[instruction.Rd.Value] = moved;
                     else
                         constants.Remove(instruction.Rd.Value);
-                    if (entryPinRegisters.Contains(instruction.Rs1.Value))
-                        nextPinRegisters.Add(instruction.Rd.Value);
+                    if (entryPinRegisters.TryGetValue(instruction.Rs1.Value, out int sourceArgument))
+                        nextPinRegisters[instruction.Rd.Value] = sourceArgument;
+                    if (instruction.Rd.Value == 10 && instruction.Rs1.Value == 2)
+                        pointerOffsets.Add(0);
                 }
                 else if (instruction.Rd.HasValue && instruction.Rd.Value != 0)
                 {
                     constants.Remove(instruction.Rd.Value);
                 }
                 entryPinRegisters = nextPinRegisters;
-
-                if (IsReturn(instruction))
-                    break;
-            }
-
-            foreach (int baseOffset in pinOffsets)
-            {
-                if (!calledPointerOffsets.Contains(baseOffset) ||
-                    !stackBytes.TryGetValue(baseOffset + 1, out byte function) || function != 11 ||
-                    !stackBytes.TryGetValue(baseOffset + 2, out byte mode) || mode > 1 ||
-                    !stackBytes.TryGetValue(baseOffset + 4, out byte drive) || drive != 0 ||
-                    !stackBytes.TryGetValue(baseOffset + 5, out byte schmitt) || schmitt != 1)
-                {
-                    continue;
-                }
-                return mode == 0 ? "input-config" : "output-config";
+                // Optimized RV32 functions may place a valid branch target
+                // after an earlier error-path return.  The function boundary
+                // and instruction limit already bound this scan.
             }
             return null;
         }
@@ -2373,6 +2820,7 @@ namespace BK7231Flasher
                 ["write"] = new HashSet<int>(),
                 ["input-config"] = new HashSet<int>(),
                 ["output-config"] = new HashSet<int>(),
+                ["pwm-config"] = new HashSet<int>(),
             };
 
             for (int entryPosition = 0; entryPosition < entries.Count; entryPosition++)
@@ -2388,9 +2836,10 @@ namespace BK7231Flasher
                     endIndex++;
                 foreach (string kind in ClassifyGpioPrimitive(instructions, startIndex, endIndex))
                     primitives[kind].Add(entry);
-                string configKind = ClassifyGpioConfigPrimitive(instructions, startIndex, endIndex);
-                if (configKind != null)
-                    primitives[configKind].Add(entry);
+                GpioConfigPrimitiveProof configProof =
+                    ClassifyGpioConfigPrimitive(instructions, startIndex, endIndex);
+                if (configProof != null)
+                    primitives[configProof.Kind].Add(entry);
             }
 
             Dictionary<uint, int> configTables = FindGpioConfigTables(
@@ -2508,6 +2957,85 @@ namespace BK7231Flasher
             else if (configTables.Count != 0)
             {
                 AddDiagnostic(result, "Hardware-proven BL602 GPIO input/output configuration helpers and six-mode HOSAL dispatch table found, but no constant application pin reaches a proven configuration API.");
+            }
+
+            HashSet<int> pwmTargets = new HashSet<int>(primitives["pwm-config"]);
+            Dictionary<int, int> pwmDepth = primitives["pwm-config"]
+                .ToDictionary(item => item, item => 0);
+            Dictionary<int, int> pwmPrimitive = primitives["pwm-config"]
+                .ToDictionary(item => item, item => item);
+            const int maxPwmWrapperDepth = 1;
+            for (int wrapperDepth = 1; wrapperDepth <= maxPwmWrapperDepth; wrapperDepth++)
+            {
+                foreach (int caller in entries)
+                {
+                    if (pwmTargets.Contains(caller))
+                        continue;
+                    int entryPosition = entries.BinarySearch(caller);
+                    int nextEntry = entryPosition + 1 < entries.Count
+                        ? entries[entryPosition + 1]
+                        : instructions[instructions.Count - 1].Offset + instructions[instructions.Count - 1].Size;
+                    if (nextEntry - caller > 0x100)
+                        continue;
+                    if (!transfersByCaller.TryGetValue(caller, out List<CallRecord> callerTransfers))
+                        continue;
+                    List<CallRecord> pwmTransfers = callerTransfers.Where(item =>
+                        pwmDepth.TryGetValue(item.Target, out int depth) &&
+                        depth == wrapperDepth - 1).ToList();
+                    if (pwmTransfers.Count == 0 || pwmTransfers.Any(item => item.Args[1].HasValue))
+                        continue;
+                    List<int> origins = pwmTransfers.Select(item => pwmPrimitive[item.Target])
+                        .Distinct()
+                        .ToList();
+                    if (origins.Count != 1)
+                        continue;
+                    pwmTargets.Add(caller);
+                    pwmDepth[caller] = wrapperDepth;
+                    pwmPrimitive[caller] = origins[0];
+                }
+            }
+
+            List<CallRecord> pwmCalls = transfers.Where(item =>
+                pwmTargets.Contains(item.Target) &&
+                !pwmTargets.Contains(FunctionEntryForOffset(entries, item.Offset)) &&
+                item.Args[0].HasValue && item.Args[0].Value >= 0 && item.Args[0].Value <= 4 &&
+                item.Args[1].HasValue && item.Args[1].Value >= 0 && item.Args[1].Value <= 22 &&
+                item.Args[1].Value % 5 == item.Args[0].Value)
+                .OrderBy(item => item.Offset)
+                .ToList();
+            foreach (IGrouping<string, CallRecord> group in pwmCalls.GroupBy(item =>
+                item.Args[0].Value.ToString(CultureInfo.InvariantCulture) + ":" +
+                item.Args[1].Value.ToString(CultureInfo.InvariantCulture) + ":" +
+                pwmPrimitive[item.Target].ToString(CultureInfo.InvariantCulture),
+                StringComparer.Ordinal))
+            {
+                List<CallRecord> calls = group.OrderBy(item => item.Offset).ToList();
+                int channel = calls[0].Args[0].Value;
+                int pin = calls[0].Args[1].Value;
+                int primitive = pwmPrimitive[calls[0].Target];
+                int depth = calls.Min(item => pwmDepth[item.Target]);
+                string sites = string.Join(", ", calls.Take(4)
+                    .Select(item => "0x" + item.Offset.ToString("X", CultureInfo.InvariantCulture)));
+                if (calls.Count > 4)
+                    sites += ", +" + (calls.Count - 4).ToString(CultureInfo.InvariantCulture) + " more";
+                AddFinding(result,
+                    pin,
+                    "PWM output (channel " + channel.ToString(CultureInfo.InvariantCulture) + ")",
+                    depth == 0 ? Confidence.High : Confidence.Medium,
+                    "Hardware-proven BL602 PWM configuration",
+                    "constant PWM channel " + channel.ToString(CultureInfo.InvariantCulture) +
+                        " and GPIO" + pin.ToString(CultureInfo.InvariantCulture) +
+                        " satisfy BL602 GPIO%5 channel routing and " +
+                        "reach stack-built GLB_GPIO_Cfg_Type function 8 helper 0x" +
+                        primitive.ToString("X", CultureInfo.InvariantCulture) +
+                        " at " + sites,
+                    false);
+            }
+            if (pwmCalls.Count != 0)
+            {
+                const string pwmNote = "Hardware-proven PWM rows establish channel and GPIO routing; electrical polarity and the attached colour/device role remain unresolved.";
+                if (!result.Notes.Contains(pwmNote))
+                    result.Notes.Add(pwmNote);
             }
 
             foreach (string kind in new[] { "read", "write" })
@@ -2944,30 +3472,48 @@ namespace BK7231Flasher
                 .ToList();
         }
 
-        private static bool TryFindFirmwareRegion(byte[] data, out int start, out int end)
+        private static bool TryFindFirmwareRegion(
+            byte[] data,
+            PartitionTableSummary partitionTable,
+            out int start,
+            out int end)
         {
             start = 0;
             end = 0;
-            foreach (int searchStart in new[] { 0x10000, 0 })
+            int searchFloor = 0;
+            int searchCeiling = data.Length;
+            if (partitionTable != null)
             {
-                if (searchStart >= data.Length)
+                PartitionEntrySummary firmware = partitionTable.Entries.FirstOrDefault(item =>
+                    string.Equals(item.Name, "FW", StringComparison.OrdinalIgnoreCase));
+                if (firmware != null && firmware.Address < data.Length)
+                {
+                    long partitionEnd = (long)firmware.Address + firmware.Length;
+                    searchFloor = (int)firmware.Address;
+                    searchCeiling = (int)Math.Min(partitionEnd, data.Length);
+                }
+            }
+
+            foreach (int searchStart in new[] { Math.Max(0x10000, searchFloor), searchFloor })
+            {
+                if (searchStart >= searchCeiling)
                     continue;
-                int header = IndexOf(data, Bytes("BFNP"), searchStart, data.Length);
-                while (header >= 0 && header + 124 <= data.Length)
+                int header = IndexOf(data, Bytes("BFNP"), searchStart, searchCeiling);
+                while (header >= 0 && header + 124 <= searchCeiling)
                 {
                     // BL602 boot headers place img_len at +120 and the linked
                     // payload in the following 4 KiB slot.
                     uint imageLength = ReadLe32(data, header + 120);
                     long payloadStart = (long)header + 0x1000;
                     long payloadEnd = payloadStart + imageLength;
-                    if (imageLength >= 0x1000 && payloadStart < data.Length &&
-                        payloadEnd > payloadStart && payloadEnd <= data.Length)
+                    if (imageLength >= 0x1000 && payloadStart < searchCeiling &&
+                        payloadEnd > payloadStart && payloadEnd <= searchCeiling)
                     {
                         start = (int)payloadStart;
                         end = (int)payloadEnd;
                         return true;
                     }
-                    header = IndexOf(data, Bytes("BFNP"), header + 4, data.Length);
+                    header = IndexOf(data, Bytes("BFNP"), header + 4, searchCeiling);
                 }
             }
             return false;
@@ -2983,7 +3529,7 @@ namespace BK7231Flasher
         {
             int start;
             int end;
-            if (!TryFindFirmwareRegion(data, out start, out end))
+            if (!TryFindFirmwareRegion(data, result.PartitionTables.FirstOrDefault(), out start, out end))
             {
                 start = data.Length > 0x12000 ? 0x10000 : 0;
                 int firstDtb = headers.Count == 0 ? data.Length : headers.Min(item => item.Base);
