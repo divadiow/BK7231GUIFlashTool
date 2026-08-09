@@ -1,12 +1,19 @@
 #!/usr/bin/env python3
-"""Select a bounded, multi-platform Tuya dump corpus without checking out the whole FlashDumps repository."""
+"""Select a bounded, multi-platform Tuya dump corpus without cloning the full FlashDumps repository."""
 
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import dataclasses
+import json
+import os
 import re
+import shutil
 import subprocess
+import sys
+import urllib.parse
+import urllib.request
 from pathlib import Path
 
 
@@ -44,10 +51,56 @@ EXCLUDED = re.compile(
 )
 
 PREFERRED = re.compile(r"(?:Tuya|schemaID|key[a-z0-9]{8,}|readResult|flashdump|full)", re.I)
+USER_AGENT = "BK7231GUIFlashTool-Android-corpus-test/0.1"
 
 
-def parse_tree(repo: Path) -> list[Entry]:
-    command = ["git", "-C", str(repo), "ls-tree", "-r", "-l", "origin/main", "--", "IoT"]
+def request_json(url: str) -> dict:
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": USER_AGENT,
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    token = os.environ.get("GITHUB_TOKEN", "").strip()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    request = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(request, timeout=120) as response:
+        return json.load(response)
+
+
+def parse_github_tree(repository: str, ref: str) -> tuple[list[Entry], str]:
+    quoted_repository = "/".join(urllib.parse.quote(part, safe="") for part in repository.split("/"))
+    commit_url = f"https://api.github.com/repos/{quoted_repository}/commits/{urllib.parse.quote(ref, safe='')}"
+    commit = request_json(commit_url)
+    commit_sha = str(commit["sha"])
+    tree_sha = str(commit["commit"]["tree"]["sha"])
+
+    tree_url = f"https://api.github.com/repos/{quoted_repository}/git/trees/{tree_sha}?recursive=1"
+    payload = request_json(tree_url)
+    if payload.get("truncated"):
+        raise RuntimeError("GitHub's recursive tree response was truncated; use a local partial clone instead.")
+
+    entries: list[Entry] = []
+    for item in payload.get("tree", []):
+        if item.get("type") != "blob":
+            continue
+        path = str(item.get("path", ""))
+        if not path.startswith("IoT/") or not path.lower().endswith(".bin"):
+            continue
+        size = int(item.get("size") or 0)
+        if size < 480 * 1024 or size > 17 * 1024 * 1024:
+            continue
+        if EXCLUDED.search(path):
+            continue
+        entries.append(Entry(path=path, size=size))
+    return entries, commit_sha
+
+
+def parse_local_tree(repo: Path, ref: str) -> tuple[list[Entry], str]:
+    commit_sha = subprocess.check_output(
+        ["git", "-C", str(repo), "rev-parse", ref], text=True, errors="replace"
+    ).strip()
+    command = ["git", "-C", str(repo), "ls-tree", "-r", "-l", ref, "--", "IoT"]
     text = subprocess.check_output(command, text=True, errors="replace")
     entries: list[Entry] = []
     for line in text.splitlines():
@@ -64,7 +117,7 @@ def parse_tree(repo: Path) -> list[Entry]:
         if EXCLUDED.search(path):
             continue
         entries.append(Entry(path=path, size=size))
-    return entries
+    return entries, commit_sha
 
 
 def score(entry: Entry, pattern: re.Pattern[str]) -> tuple[int, int, str]:
@@ -90,11 +143,29 @@ def safe_name(path: str) -> str:
     return name[:180]
 
 
-def materialise(repo: Path, entry: Entry, destination: Path) -> None:
+def download_remote(repository: str, commit_sha: str, entry: Entry, destination: Path) -> None:
+    quoted_repository = "/".join(urllib.parse.quote(part, safe="") for part in repository.split("/"))
+    quoted_path = urllib.parse.quote(entry.path, safe="/")
+    url = f"https://raw.githubusercontent.com/{quoted_repository}/{commit_sha}/{quoted_path}"
+    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_suffix(destination.suffix + ".partial")
+    try:
+        with urllib.request.urlopen(request, timeout=300) as response, temporary.open("wb") as output:
+            shutil.copyfileobj(response, output, length=1024 * 1024)
+        actual = temporary.stat().st_size
+        if actual != entry.size:
+            raise IOError(f"Downloaded size mismatch for {entry.path}: expected {entry.size}, got {actual}")
+        temporary.replace(destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def materialise_local(repo: Path, ref: str, entry: Entry, destination: Path) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     with destination.open("wb") as output:
         subprocess.run(
-            ["git", "-C", str(repo), "show", f"origin/main:{entry.path}"],
+            ["git", "-C", str(repo), "show", f"{ref}:{entry.path}"],
             check=True,
             stdout=output,
         )
@@ -102,12 +173,26 @@ def materialise(repo: Path, entry: Entry, destination: Path) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("repo", type=Path)
+    parser.add_argument(
+        "source",
+        help="GitHub repository in owner/name form (preferred) or a local Git repository path",
+    )
     parser.add_argument("output", type=Path)
+    parser.add_argument("--ref", default="main")
     parser.add_argument("--per-platform", type=int, default=1)
+    parser.add_argument("--download-workers", type=int, default=4)
     args = parser.parse_args()
 
-    entries = parse_tree(args.repo)
+    local_repo = Path(args.source)
+    remote_repository: str | None = None
+    if local_repo.exists():
+        entries, commit_sha = parse_local_tree(local_repo, args.ref)
+    else:
+        if args.source.count("/") != 1:
+            parser.error("source must be an existing local path or GitHub owner/name")
+        remote_repository = args.source
+        entries, commit_sha = parse_github_tree(remote_repository, args.ref)
+
     args.output.mkdir(parents=True, exist_ok=True)
     selected_paths: set[str] = set()
     manifest: list[tuple[str, Entry, Path]] = []
@@ -118,19 +203,45 @@ def main() -> int:
         for entry in candidates[: args.per_platform]:
             selected_paths.add(entry.path)
             target = args.output / platform / safe_name(entry.path)
-            materialise(args.repo, entry, target)
             manifest.append((platform, entry, target))
-            print(f"selected {platform}: {entry.path} ({entry.size} bytes)")
 
+    if remote_repository:
+        workers = max(1, min(args.download_workers, len(manifest)))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {
+                executor.submit(download_remote, remote_repository, commit_sha, entry, target):
+                (platform, entry, target)
+                for platform, entry, target in manifest
+            }
+            for future in concurrent.futures.as_completed(futures):
+                platform, entry, _ = futures[future]
+                future.result()
+                print(f"selected {platform}: {entry.path} ({entry.size} bytes)", flush=True)
+    else:
+        for platform, entry, target in manifest:
+            materialise_local(local_repo, args.ref, entry, target)
+            print(f"selected {platform}: {entry.path} ({entry.size} bytes)", flush=True)
+
+    manifest.sort(key=lambda item: (item[0], item[1].path))
     manifest_path = args.output / "manifest.tsv"
     with manifest_path.open("w", encoding="utf-8", newline="\n") as handle:
-        handle.write("platform\tsize\tsource_path\tsample_path\n")
+        handle.write("platform\tsize\tsource_commit\tsource_path\tsample_path\n")
         for platform, entry, target in manifest:
-            handle.write(f"{platform}\t{entry.size}\t{entry.path}\t{target.relative_to(args.output)}\n")
+            handle.write(
+                f"{platform}\t{entry.size}\t{commit_sha}\t{entry.path}\t{target.relative_to(args.output)}\n"
+            )
 
-    print(f"selected {len(manifest)} samples across {len({item[0] for item in manifest})} platforms")
+    print(
+        f"selected {len(manifest)} samples across {len({item[0] for item in manifest})} platforms "
+        f"from commit {commit_sha}",
+        flush=True,
+    )
     return 0 if manifest else 1
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except Exception as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        raise
