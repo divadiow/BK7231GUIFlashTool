@@ -17,6 +17,13 @@ import urllib.request
 from pathlib import Path
 
 
+# GitHub Actions Windows runners otherwise default Python stdout to cp1252, which
+# cannot represent all FlashDumps filenames. Force stable UTF-8 diagnostic output.
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+
+
 @dataclasses.dataclass(frozen=True)
 class Entry:
     path: str
@@ -24,7 +31,7 @@ class Entry:
 
 
 CATEGORIES: list[tuple[str, re.Pattern[str]]] = [
-    ("BK7231N", re.compile(r"(?:BK7231N|CB2S|CB2L|CBU(?:[-_./]|$)|T2[-_])", re.I)),
+    ("BK7231N", re.compile(r"^(?!.*BK7252)(?:IoT/BK7231N/|.*[/_.() -](?:CB2S|CB2L|CBU|T2)(?:[/_.() -]|$))", re.I)),
     ("BK7231T", re.compile(r"(?:BK7231T|WB3S|WB2S|WB2L(?!_M1))", re.I)),
     ("BK7236_T3", re.compile(r"(?:BK7236|(?:^|[/_])T3[-_])", re.I)),
     ("BK7238_T1", re.compile(r"(?:BK7238|XH-CB3S|(?:^|[/_])T1[-_])", re.I)),
