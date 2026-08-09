@@ -60,9 +60,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git clone --filter=blob:none --no-checkout https://github.com/divadiow/FlashDumps.git "$RUNNER_TEMP/FlashDumps"
-          git -C "$RUNNER_TEMP/FlashDumps" fetch --depth=1 origin main
-          python3 Android/scripts/select_flashdumps.py "$RUNNER_TEMP/FlashDumps" "$RUNNER_TEMP/tuya-samples" --per-platform 1
+          python3 Android/scripts/select_flashdumps.py divadiow/FlashDumps "$RUNNER_TEMP/tuya-samples" --per-platform 1
           cat "$RUNNER_TEMP/tuya-samples/manifest.tsv"
 
       - name: Run wrapper parity and determinism tests
@@ -217,9 +215,7 @@ jobs:
       - name: Select the same representative FlashDumps corpus
         shell: pwsh
         run: |
-          git clone --filter=blob:none --no-checkout https://github.com/divadiow/FlashDumps.git "$env:RUNNER_TEMP/FlashDumps"
-          git -C "$env:RUNNER_TEMP/FlashDumps" fetch --depth=1 origin main
-          python Android/scripts/select_flashdumps.py "$env:RUNNER_TEMP/FlashDumps" "$env:RUNNER_TEMP/tuya-samples" --per-platform 1
+          python Android/scripts/select_flashdumps.py divadiow/FlashDumps "$env:RUNNER_TEMP/tuya-samples" --per-platform 1
           Get-Content -LiteralPath "$env:RUNNER_TEMP/tuya-samples/manifest.tsv"
 
       - name: Compare complete JSON strings with Windows CLI
