@@ -10,5 +10,6 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="..\..\BK7231Flasher\Utils\TuyaConfig.cs" Link="TuyaConfig.cs" />
+    <Compile Include="..\..\BK7231Flasher\Misc\TuyaModules.cs" Link="TuyaModules.cs" />
   </ItemGroup>
 </Project>
