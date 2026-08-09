@@ -31,23 +31,39 @@ namespace BK7231Flasher
         }
     }
 
-    // Only these values are referenced by TuyaConfig.cs. Numeric identity is irrelevant to extraction.
+    // Values referenced by TuyaConfig.cs and the linked TuyaModules.cs. Numeric identity is
+    // irrelevant here: the extractor compares enum symbols and TuyaModules returns nameof(...).
     public enum BKType
     {
         Invalid = 0,
+        BK7231T,
+        BK7231N,
+        BK7236,
+        BK7238,
+        BK7252N,
+        BK7258,
         RTL8710B,
         RTL87X0C,
         RTL8720D,
-        LN882H,
-        BK7236,
-        BK7238,
-        BK7258,
+        RTL8721DA,
+        BL602,
+        BL616,
         ECR6600,
+        LN882H,
         LN8825,
         TR6260,
-        XR809,
         XR806,
-        RDA5981
+        XR809,
+        RDA5981,
+        W800,
+        ESP8266,
+        ESP32S2,
+        ESP32C2,
+        ESP32C3,
+        ESP32C5,
+        ESP32C6,
+        ESP32C61,
+        ESP32S3
     }
 
     // Retains upstream ordering so optional OBK pin translation remains source-compatible.
