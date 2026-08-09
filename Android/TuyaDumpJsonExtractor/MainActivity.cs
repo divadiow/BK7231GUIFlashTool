@@ -1,4 +1,5 @@
 using System.Text;
+using IOPath = System.IO.Path;
 using Android.App;
 using Android.Content;
 using Android.Content.PM;
@@ -95,9 +96,9 @@ public sealed class MainActivity : Activity
 
         var actions = new LinearLayout(this)
         {
-            Orientation = Orientation.Horizontal,
-            Gravity = GravityFlags.CenterVertical
+            Orientation = Orientation.Horizontal
         };
+        actions.SetGravity(GravityFlags.CenterVertical);
 
         _openButton = CreateButton("Open dump");
         _copyButton = CreateButton("Copy JSON");
@@ -117,9 +118,9 @@ public sealed class MainActivity : Activity
 
         var infoRow = new LinearLayout(this)
         {
-            Orientation = Orientation.Horizontal,
-            Gravity = GravityFlags.CenterVertical
+            Orientation = Orientation.Horizontal
         };
+        infoRow.SetGravity(GravityFlags.CenterVertical);
         infoRow.SetPadding(0, Dp(8), 0, Dp(6));
 
         _progress = new ProgressBar(this)
@@ -159,10 +160,10 @@ public sealed class MainActivity : Activity
             InputType = Android.Text.InputTypes.ClassText |
                         Android.Text.InputTypes.TextFlagMultiLine |
                         Android.Text.InputTypes.TextFlagNoSuggestions,
-            HorizontallyScrolling = true,
             ShowSoftInputOnFocus = false,
             Text = "Extracted JSON will appear here."
         };
+        _jsonOutput.SetHorizontallyScrolling(true);
         _jsonOutput.SetTextIsSelectable(true);
         _jsonOutput.SetPadding(Dp(10), Dp(10), Dp(10), Dp(10));
         root.AddView(_jsonOutput, new LinearLayout.LayoutParams(
@@ -174,13 +175,17 @@ public sealed class MainActivity : Activity
         return root;
     }
 
-    private Button CreateButton(string text) => new(this)
+    private Button CreateButton(string text)
     {
-        Text = text,
-        AllCaps = false,
-        MinWidth = 0,
-        MinimumWidth = 0
-    };
+        var button = new Button(this)
+        {
+            Text = text
+        };
+        button.SetAllCaps(false);
+        button.SetMinWidth(0);
+        button.SetMinimumWidth(0);
+        return button;
+    }
 
     private static LinearLayout.LayoutParams MatchWrap() =>
         new(ViewGroup.LayoutParams.MatchParent, ViewGroup.LayoutParams.WrapContent);
@@ -210,7 +215,7 @@ public sealed class MainActivity : Activity
         if (string.IsNullOrEmpty(_currentJson))
             return;
 
-        string title = Path.GetFileNameWithoutExtension(_currentFileName);
+        string title = IOPath.GetFileNameWithoutExtension(_currentFileName);
         if (string.IsNullOrWhiteSpace(title))
             title = "tuya-config";
 
@@ -359,7 +364,7 @@ public sealed class MainActivity : Activity
         var intent = new Intent(Intent.ActionSend);
         intent.SetType("application/json");
         intent.PutExtra(Intent.ExtraText, _currentJson);
-        intent.PutExtra(Intent.ExtraTitle, Path.GetFileNameWithoutExtension(_currentFileName) + ".json");
+        intent.PutExtra(Intent.ExtraTitle, IOPath.GetFileNameWithoutExtension(_currentFileName) + ".json");
         StartActivity(Intent.CreateChooser(intent, "Share extracted JSON"));
     }
 
