@@ -66,6 +66,7 @@ namespace BK7231Flasher
         {
             Singleton = this;
             InitializeComponent();
+            InitializeBl602IoExtractorTab();
             var version = Assembly.GetExecutingAssembly().GetCustomAttribute<BuildVersion>().Value;
             Text += $" (build {(string.IsNullOrWhiteSpace(version) ? "local" : version)})";
         }
