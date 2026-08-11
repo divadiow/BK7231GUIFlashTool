@@ -114,10 +114,10 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up MSBuild
-        uses: microsoft/setup-msbuild@v1
+        uses: microsoft/setup-msbuild@v3
 
       - name: Create Output Directory
         run: mkdir -p BuildOutput/Release
@@ -132,7 +132,7 @@ jobs:
           dir BuildOutput\Release
 
       - name: Upload Build Artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: BK7231GUIFlashTool
           path: |
@@ -155,10 +155,10 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Download Build Artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v7
         with:
           name: BK7231GUIFlashTool
 
@@ -187,7 +187,7 @@ jobs:
           powershell Compress-Archive -Path "BuildOutput/Release/*" -DestinationPath "release/BK7231GUIFlashTool-build-${{ needs.version.outputs.version }}.zip"
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.version.outputs.version }}
           name: BK7231GUIFlashTool build ${{ needs.version.outputs.version }}

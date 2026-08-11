@@ -66,6 +66,7 @@ namespace BK7231Flasher
         {
             Singleton = this;
             InitializeComponent();
+            InitializeBl602IoExtractorTab();
             var version = Assembly.GetExecutingAssembly().GetCustomAttribute<BuildVersion>().Value;
             Text += $" (build {(string.IsNullOrWhiteSpace(version) ? "local" : version)})";
         }
@@ -191,6 +192,10 @@ namespace BK7231Flasher
             }
 
             settings = MySettings.CreateAndLoad("settings.cfg");
+            if (settings.RemoveKey("ScannerPass"))
+            {
+                settings.Save("settings.cfg");
+            }
             List<string> recentIPs = settings.getRecentIPs();
             for(int i = recentIPs.Count-1; i >= 0; i--)
             {
@@ -301,10 +306,6 @@ namespace BK7231Flasher
             if (settings.HasKey("bAllowBackupRestore"))
             {
                 checkBoxAllowBackup.Checked = settings.FindKeyValueBool("bAllowBackupRestore");
-            }
-            if (settings.HasKey("ScannerPass"))
-            {
-                textBoxIPScannerPass.Text = settings.FindKeyValue("ScannerPass","admin");
             }
             if (settings.HasKey("ScannerUser"))
             {
@@ -1294,7 +1295,9 @@ namespace BK7231Flasher
                     TuyaConfig tc = new TuyaConfig();
                     if (tc.fromBytes(dat) == false)
                     {
-                        if (tc.extractKeys() == false)
+                        bool classicExtractFailed = tc.extractKeys();
+                        bool hasEnhancedFallback = classicExtractFailed && tc.hasEnhancedExtractionData();
+                        if (!classicExtractFailed || hasEnhancedFallback)
                         {
                             Singleton.buttonRead.Invoke((MethodInvoker)delegate {
                                 // Running on the UI thread
@@ -2010,13 +2013,34 @@ namespace BK7231Flasher
             setMaxWorkersCountFromGUI();
         }
 
+        private static bool sendRebootIfConfirmed(
+            OBKDeviceAPI device,
+            DialogResult confirmation)
+        {
+            if (device == null || confirmation != DialogResult.Yes)
+            {
+                return false;
+            }
+            device.sendCmnd("reboot", null);
+            return true;
+        }
+
         private void listView1_MouseClick(object sender, MouseEventArgs e)
         {
             if (e.Button == MouseButtons.Right)
             {
-                ListViewItem selectedItem = listView1.FocusedItem;
+                ListViewItem selectedItem = listView1.GetItemAt(e.X, e.Y);
+                OBKDeviceAPI dev = selectedItem?.Tag as OBKDeviceAPI;
+                if (selectedItem == null || dev == null)
+                {
+                    return;
+                }
+                selectedItem.Selected = true;
+                selectedItem.Focused = true;
 
-                ContextMenuStrip contextMenu = new ContextMenuStrip();
+                scannerDeviceMenu?.Dispose();
+                scannerDeviceMenu = new ContextMenuStrip(components);
+                ContextMenuStrip contextMenu = scannerDeviceMenu;
 
                 ToolStripMenuItem openPageMenuItem = new ToolStripMenuItem("Open page");
                 openPageMenuItem.Click += (s, args) =>
@@ -2038,12 +2062,16 @@ namespace BK7231Flasher
                 ToolStripMenuItem rebootMenuItem = new ToolStripMenuItem("Reboot");
                 rebootMenuItem.Click += (s, args) =>
                 {
-                    OBKDeviceAPI devo = selectedItem.Tag as OBKDeviceAPI;
-                    devo.sendCmnd("reboot",null);
+                    DialogResult confirmation = MessageBox.Show(
+                        "Reboot device at " + dev.getAdr() + "?",
+                        "Confirm reboot",
+                        MessageBoxButtons.YesNo,
+                        MessageBoxIcon.Warning,
+                        MessageBoxDefaultButton.Button2);
+                    sendRebootIfConfirmed(dev, confirmation);
                 };
                 contextMenu.Items.Add(rebootMenuItem);
 
-                OBKDeviceAPI dev = selectedItem.Tag as OBKDeviceAPI;
                 for (int i = 0; i < dev.getPowerSlotsCount(); i++)
                 {
                     int slotIndex = i+1; 
@@ -2149,7 +2177,7 @@ namespace BK7231Flasher
         }
         private void onMassBackupFinish(int totalErrors, int totalRetries)
         {
-            onMassBackupProgress("Ready! "+totalErrors+" errors, " + totalRetries + " retries.");
+            onMassBackupProgress("Complete. Errors: " + totalErrors + "; retries: " + totalRetries + ".");
             Singleton.labelMassBackupProgress.Invoke((MethodInvoker)delegate {
                 buttonStartMassBackup.Enabled = true;
             });
@@ -2157,18 +2185,13 @@ namespace BK7231Flasher
         private void onMassBackupProgress(string txt)
         {
             Singleton.labelMassBackupProgress.Invoke((MethodInvoker)delegate {
-                labelMassBackupProgress.Text = txt;
+                labelMassBackupProgress.Text = "Status: " + txt;
             });
         }
 
         private void textBoxIPScannerUser_TextChanged(object sender, EventArgs e)
         {
             setSettingsKeyAndSave("ScannerUser", textBoxIPScannerUser.Text);
-        }
-
-        private void textBoxIPScannerPass_TextChanged(object sender, EventArgs e)
-        {
-            setSettingsKeyAndSave("ScannerPass", textBoxIPScannerPass.Text);
         }
 
         private void textBoxStartIP_TextChanged(object sender, EventArgs e)
