@@ -7,7 +7,7 @@ using System.Threading;
 
 namespace BK7231Flasher
 {
-    public class LN882HFlasher : BaseFlasher
+    public class LN882HFlasher : BaseFlasher, IRomReadFlasher
     {
         int timeoutMs = 2000;
         const int eraseTimeoutMs = 300000;
@@ -17,6 +17,11 @@ namespace BK7231Flasher
         string LN8825_RomVersion = "Jun 19 2019/21:01:04\r";
         const string CommandPass = "pppp";
         const string CommandFail = "ffff";
+        const int LN882H_ROM_SIZE = 0x20000;
+        const int LN882H_EFUSE_PAYLOAD_SIZE = 0x40;
+        const int LN882H_FLASH_OTP_PAYLOAD_SIZE = 0x400;
+        const int LN882H_FIXED_DUMP_CRC_SIZE = 2;
+        const int LN882H_SPECIAL_READ_TIMEOUT_MS = 5000;
 
         bool doGenericSetup()
         {
@@ -121,7 +126,24 @@ namespace BK7231Flasher
                 if(mode != WriteMode.OnlyOBKConfig)
                 {
                     addLogLine("flash_program: will flash " + len + " bytes " + filename);
-                    if(chipType == BKType.LN882H)
+                    var sw = new Stopwatch();
+                    sw.Start();
+                    if(bUseCompressionIfPossible)
+                    {
+                        var compData = Compress(data);
+                        addLogLine($"Using compression, writing {compData.Length} bytes, compression rate - {((double)data.Length - compData.Length) / data.Length * 100.0:F2}%");
+                        PreWrite(ofs, len, true);
+                        int res = xm.Send(compData, (uint)ofs);
+                        addLogLine();
+                        if(res != compData.Length)
+                        {
+                            addLogLine($"flash_program: failed to flash ({xm.TerminationReason}), flashed only " +
+                                res + " out of " + compData.Length + " bytes!");
+                            change_baudrate(115200, false);
+                            return;
+                        }
+                    }
+                    else if(chipType == BKType.LN882H)
                     {
                         PreWrite(ofs);
                         YModem modem = new YModem(serial, logger);
@@ -137,7 +159,8 @@ namespace BK7231Flasher
                     else
                     {
                         PreWrite(ofs, data.Length, true);
-                        int res = xm.Send(data);
+                        int res = xm.Send(data, (uint)ofs);
+                        addLogLine();
                         if(res != data.Length)
                         {
                             addLogLine("flash_program: failed to flash, flashed only " +
@@ -146,8 +169,9 @@ namespace BK7231Flasher
                             return;
                         }
                     }
+                    sw.Stop();
                     logger.setProgress(1, 1);
-                    addLogLine("flash_program: sending file done");
+                    addLogLine($"flash_program: sending file done in {sw.ElapsedMilliseconds}ms");
 
                     addLogLine("flash_program: flashed " + len + " bytes!");
                     if(!ChecksumVerify(ofs, len, data))
@@ -170,7 +194,22 @@ namespace BK7231Flasher
                     addLog("Long name from CFG: " + cfg.longDeviceName + Environment.NewLine);
                     addLog("Short name from CFG: " + cfg.shortDeviceName + Environment.NewLine);
                     addLog("Web Root from CFG: " + cfg.webappRoot + Environment.NewLine);
-                    if(chipType == BKType.LN882H)
+                    if(bUseCompressionIfPossible)
+                    {
+                        var compData = Compress(wd);
+                        addLogLine($"Using compression, writing {compData.Length} bytes, compression rate - {((double)wd.Length - compData.Length) / wd.Length * 100.0:F2}%");
+                        PreWrite((int)offset, wd.Length, true);
+                        int res = xm.Send(compData, offset);
+                        addLogLine("");
+                        if(res != compData.Length)
+                        {
+                            logger.setState("Writing error!", Color.Red);
+                            addError("Writing OBK config data to chip failed." + Environment.NewLine);
+                            change_baudrate(115200, false);
+                            return;
+                        }
+                    }
+                    else if(chipType == BKType.LN882H)
                     {
                         PreWrite((int)offset);
                         YModem modem = new YModem(serial, logger);
@@ -186,7 +225,8 @@ namespace BK7231Flasher
                     else
                     {
                         PreWrite((int)offset, wd.Length, true);
-                        int res = xm.Send(wd);
+                        int res = xm.Send(wd, offset);
+                        addLogLine("");
                         if(res != wd.Length)
                         {
                             logger.setState("Writing error!", Color.Red);
@@ -327,7 +367,12 @@ namespace BK7231Flasher
                 addLogLine("Uploading RAM code");
 
                 YModem modem = new YModem(serial, logger);
-                modem.send(dat, "RAMCODE", dat.Length, false);
+                var sent = modem.send(dat, "RAMCODE", dat.Length, false);
+                if(sent < 0)
+                {
+                    addErrorLine(Environment.NewLine + "Failed to upload ramcode!");
+                    return true;
+                }
                 serial.BaudRate = 115200;
                 int attempts = 0;
                 int maxAttempts = 100;
@@ -383,6 +428,188 @@ namespace BK7231Flasher
 
             return false;
         }
+
+        public byte[] ReadRomTarget(RomReadTarget target)
+        {
+            try
+            {
+                if(target == null)
+                {
+                    addError("No ROM reader target selected." + Environment.NewLine);
+                    return null;
+                }
+                if(doGenericSetup() == false)
+                {
+                    return null;
+                }
+                if(upload_ram_loader())
+                {
+                    return null;
+                }
+                change_baudrate(baudrate);
+                string targetKindName = RomReadCatalog.GetKindDisplayName(target.Kind);
+                switch(target.Kind)
+                {
+                    case RomReadKind.Rom:
+                        return ReadLn882hRom(target.Address ?? 0, target.Length ?? LN882H_ROM_SIZE, targetKindName);
+                    case RomReadKind.Otp:
+                        return ReadLn882hFixedDump("otp_dump", target.Length ?? LN882H_FLASH_OTP_PAYLOAD_SIZE,
+                            target.ReadTrailerLength, target.ReadTrailerName, "flash OTP", targetKindName, true);
+                    case RomReadKind.Efuse:
+                        return ReadLn882hFixedDump("efuse_dump", target.Length ?? LN882H_EFUSE_PAYLOAD_SIZE,
+                            target.ReadTrailerLength, target.ReadTrailerName, "eFuse", targetKindName, false);
+                    default:
+                        addError("Selected LN882x ROM reader target is not implemented." + Environment.NewLine);
+                        return null;
+                }
+            }
+            catch(Exception ex)
+            {
+                string targetKindName = target == null ? "Selected target" : RomReadCatalog.GetKindDisplayName(target.Kind);
+                addError(targetKindName + " read failed: " + ex.Message + Environment.NewLine);
+                logger.setState(targetKindName + " read failed.", Color.Red);
+                return null;
+            }
+        }
+
+        byte[] ReadLn882hRom(int offset, int length, string targetKindName)
+        {
+            if(offset < 0 || length <= 0)
+            {
+                throw new ArgumentOutOfRangeException("length", chipType + " ROM read range is outside the supported range.");
+            }
+            return ReadLn882hXmodemDump($"fdump 0x{offset:X} 0x{length:X} 1", offset, length, "Reading " + targetKindName + "...", targetKindName);
+        }
+
+        byte[] ReadLn882hFixedDump(string command, int payloadLength, int trailerLength, string trailerName, string label,
+            string targetKindName, bool bIsCrcBigEndian)
+        {
+            if(payloadLength <= 0 || trailerLength < 0)
+            {
+                throw new ArgumentOutOfRangeException("payloadLength", chipType + " dump length is invalid.");
+            }
+            int wireLength = payloadLength + trailerLength;
+            logger.setState("Reading " + targetKindName + "...", Color.Transparent);
+            logger.setProgress(0, wireLength);
+            addLogLine("Reading " + chipType + " " + label + " via " + command + ".");
+            flush_com();
+            serial.Write(command + "\r\n");
+            byte[] result = ReadLn882hSerialBytes(wireLength, LN882H_SPECIAL_READ_TIMEOUT_MS);
+            logger.setProgress(wireLength, wireLength);
+            if(trailerLength == LN882H_FIXED_DUMP_CRC_SIZE)
+            {
+                ushort returnedCrc = bIsCrcBigEndian
+                    ? (ushort)((result[payloadLength] << 8) | result[payloadLength + 1])
+                    : (ushort)(result[payloadLength] | (result[payloadLength + 1] << 8));
+                ushort calculatedCrc = CRC16.Compute(CRC16Type.XMODEM, result, 0, payloadLength);
+                if(returnedCrc != calculatedCrc)
+                {
+                    throw new IOException((string.IsNullOrEmpty(trailerName) ? "Trailer" : trailerName) +
+                        " mismatch: returned " + formatHex(returnedCrc) + ", calculated " + formatHex(calculatedCrc) + ".");
+                }
+                addLogLine("Returned " + (string.IsNullOrEmpty(trailerName) ? "trailer" : trailerName) + ": " +
+                    formatHex(returnedCrc) + " (valid)");
+            }
+            else if(trailerLength > 0)
+            {
+                addLogLine("Returned " + trailerLength + " " +
+                    (string.IsNullOrEmpty(trailerName) ? "trailer" : trailerName) + " byte(s).");
+            }
+            logger.setState(targetKindName + " read success!", Color.Green);
+            if(trailerLength == 0)
+            {
+                return result;
+            }
+            byte[] payload = new byte[payloadLength];
+            Buffer.BlockCopy(result, 0, payload, 0, payloadLength);
+            return payload;
+        }
+
+        byte[] ReadLn882hXmodemDump(string command, int offset, int size, string stateText, string targetKindName)
+        {
+            logger.setState(stateText, Color.Green);
+            logger.setProgress(0, size);
+            addLogLine("Sending command: " + command);
+            flush_com();
+            serial.Write(command + "\r\n");
+            using(MemoryStream dump = new MemoryStream())
+            {
+                int toRead = size;
+                int currentOffset = offset;
+                void Xm_PacketReceived(XMODEM sender, byte[] packet, bool endOfFileDetected)
+                {
+                    if(((size - toRead) % 0x1000) == 0)
+                    {
+                        addLog($"0x{currentOffset:X}... ");
+                    }
+                    currentOffset += packet.Length;
+                    toRead -= packet.Length;
+                    if(!isCancelled) logger.setProgress(size - toRead, size);
+                }
+                xm.PacketReceived += Xm_PacketReceived;
+                try
+                {
+                    var res = xm.Receive(dump);
+                    if(res != XMODEM.TerminationReasonEnum.EndOfFile)
+                    {
+                        throw new IOException(chipType + " dump failed with " + res);
+                    }
+                }
+                finally
+                {
+                    addLog(Environment.NewLine);
+                    xm.PacketReceived -= Xm_PacketReceived;
+                }
+                if(dump.Length != size)
+                {
+                    throw new IOException("Read " + dump.Length + " bytes, but expected " + size + ".");
+                }
+                logger.setState(targetKindName + " read success!", Color.Green);
+                return dump.ToArray();
+            }
+        }
+
+        byte[] ReadLn882hSerialBytes(int expectedLength, int readTimeout)
+        {
+            byte[] result = new byte[expectedLength];
+            int offset = 0;
+            int oldReadTimeout = serial.ReadTimeout;
+            serial.ReadTimeout = 500;
+            try
+            {
+                Stopwatch sw = Stopwatch.StartNew();
+                while(!isCancelled && offset < expectedLength && sw.ElapsedMilliseconds < readTimeout)
+                {
+                    try
+                    {
+                        int read = serial.Read(result, offset, expectedLength - offset);
+                        if(read > 0)
+                        {
+                            offset += read;
+                            logger.setProgress(offset, expectedLength);
+                        }
+                    }
+                    catch(TimeoutException)
+                    {
+                        continue;
+                    }
+                }
+                if(isCancelled)
+                {
+                    throw new OperationCanceledException("Read cancelled by user.");
+                }
+                if(offset == expectedLength)
+                {
+                    return result;
+                }
+                throw new TimeoutException("Timed out waiting for " + chipType + " dump response.");
+            }
+            finally
+            {
+                serial.ReadTimeout = oldReadTimeout;
+            }
+        }
+
         public bool doReadInternal(int startSector = 0x000, int size = 0x1000, bool fullRead = false, bool restoreBaud = true)
         {
             if(fullRead)
@@ -401,6 +628,7 @@ namespace BK7231Flasher
                     addLogLine("Error on flash_id");
                     return false;
                 }
+                if(flashID[0] < 0x11 || flashID[0] > 0x22) throw new Exception("Flash ID incorrect!");
                 flashSizeMB = (1 << (flashID[0] - 0x11)) / 8;
                 addLog("Flash ID: 0x" + flashID[2].ToString("X2") + flashID[1].ToString("X2") + flashID[0].ToString("X2")+Environment.NewLine);
                 addLog("Flash size is " + flashSizeMB + "MB" + Environment.NewLine);
@@ -411,7 +639,15 @@ namespace BK7231Flasher
             var result = true;
             var t = Stopwatch.StartNew();
             logger.setState("Reading flash", Color.Green);
-            serial.Write($"fdump 0x{startSector:X} 0x{size:X}\r\n");
+            logger.setProgress(0, 1);
+            if(bUseCompressionIfPossible)
+            {
+                serial.Write($"fdumpz 0x{startSector:X} 0x{size:X}\r\n");
+            }
+            else
+            {
+                serial.Write($"fdump 0x{startSector:X} 0x{size:X} 0\r\n");
+            }
             ms?.Dispose();
             ms = new MemoryStream();
             var offset = startSector;
@@ -426,7 +662,7 @@ namespace BK7231Flasher
                 }
                 offset += packet.Length;
                 toRead -= packet.Length;
-                if(!isCancelled) logger.setProgress(size - toRead, size);
+                if(!isCancelled && !bUseCompressionIfPossible) logger.setProgress(size - toRead, size);
             }
             xm.PacketReceived += Xm_PacketReceived;
             try
@@ -438,7 +674,7 @@ namespace BK7231Flasher
                     Thread.Sleep(100);
                     result = false;
                 }
-                if(ms.Length != size)
+                if(ms.Length != size && !bUseCompressionIfPossible)
                 {
                     addError($"Read {ms.Length} bytes, but expected {size}! Try with lower baud rate?");
                     result = false;
@@ -449,7 +685,15 @@ namespace BK7231Flasher
                 addLog(Environment.NewLine);
                 xm.PacketReceived -= Xm_PacketReceived;
             }
-            if(result && !ChecksumVerify(startSector, size, ms.ToArray()))
+            var ret = ms.ToArray();
+            if(bUseCompressionIfPossible)
+            {
+                ret = Decompress(ret);
+                addLogLine($"Uncompressed, compression ratio {((double)ret.Length - ms.Length) / ret.Length * 100.0:F2}%");
+                ms?.Dispose();
+                ms = new MemoryStream(ret);
+            }
+            if(result && !ChecksumVerify(startSector, size, ret))
             {
                 result = false;
             }
@@ -644,7 +888,7 @@ namespace BK7231Flasher
         {
             if(xm_mode)
             {
-                serial.Write($"fwrite 0x{startAddr:X} 0x{size:X}\r\n");
+                serial.Write($"fwrite{(bUseCompressionIfPossible ? "z" : "")} 0x{startAddr:X} 0x{size:X}\r\n");
                 return;
             }
             serial.Write($"startaddr 0x{startAddr:X}\r\n");

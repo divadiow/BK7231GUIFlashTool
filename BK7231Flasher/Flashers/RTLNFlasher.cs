@@ -7,12 +7,11 @@ using System.Threading;
 
 namespace BK7231Flasher
 {
-	public class RTLNFlasher : ECRBaseFlasher
+	public class RTLNFlasher : ECRBaseFlasher, IRomReadFlasher
 	{
 		byte[] flashID;
 		static readonly byte CMD_KV_GET = 0x93;
 		static readonly byte CMD_KV_SET = 0x94;
-		static readonly byte CMD_MAC_GET = 0x95;
 
 		public RTLNFlasher(CancellationToken ct) : base(ct)
 		{
@@ -25,11 +24,15 @@ namespace BK7231Flasher
 			addLog("Going to open port: " + serialName + "." + Environment.NewLine);
 			try
 			{
-				serial = new SerialPort(serialName, 115200);
+				cancellationToken.ThrowIfCancellationRequested();
+				serial = new SerialPort(serialName, 115200)
+				{
+					ReadBufferSize = 65536,
+					ReadTimeout = 8000
+				};
 				serial.Open();
 				serial.DiscardInBuffer();
 				serial.DiscardOutBuffer();
-				serial.ReadTimeout = 2000;
 				xm = new XMODEM(serial, XMODEM.Variants.XModem1K, 0xFF)
 				{
 					MaxSenderRetries = 50,
@@ -44,11 +47,6 @@ namespace BK7231Flasher
 			}
 			addLog("Port ready!" + Environment.NewLine);
 			return true;
-		}
-
-		internal byte[] ReadMAC()
-		{
-			return ExecuteCommand(CMD_MAC_GET, expectedReplyLen: 6);
 		}
 
 		private bool SetBaud(int baud, bool noCheck = false)
@@ -97,8 +95,8 @@ namespace BK7231Flasher
 				serial.Close();
 				serial.BaudRate = baud;
 				serial.Open();
-				serial.ReadTimeout = 2000;
-				serial.WriteTimeout = 2000;
+				serial.ReadTimeout = 8000;
+				serial.WriteTimeout = 8000;
 				Thread.Sleep(50);
 				serial.DiscardInBuffer();
 				serial.DiscardOutBuffer();
@@ -127,10 +125,15 @@ namespace BK7231Flasher
 			}
 			else
 			{
+				if(chipType == BKType.RTL8710B)
+				{
+					serial.BaudRate = 1500000;
+				}
 				SetBaud(460800);
 				addLogLine("Sending RAM code...");
 				var stub = chipType switch
 				{
+					BKType.RTL8710B => FLoaders.GetBinaryFromAssembly("RTL8710B_Stub"),
 					BKType.RTL8721DA => FLoaders.GetBinaryFromAssembly("RTL8721DA_Stub"),
 					BKType.RTL8720E => FLoaders.GetBinaryFromAssembly("RTL8720E_Stub"),
 					_ => throw new Exception()
@@ -138,6 +141,7 @@ namespace BK7231Flasher
 				
 				var offset = chipType switch
 				{
+					BKType.RTL8710B => 0x10002000,
 					BKType.RTL8721DA => 0x3000A020,
 					BKType.RTL8720E => 0x3000A020,
 					_ => throw new Exception()
@@ -147,6 +151,7 @@ namespace BK7231Flasher
 				{
 					xm.PacketSent += Xm_RtlPacketSent;
 					xm.Variant = XMODEM.Variants.XModem1KChecksum;
+					if(chipType == BKType.RTL8710B) xm.DoNotWaitForEndOfFileAcknowledgement = true;
 					if(!WriteBlockMem(stub, offset, stub.Length))
 					{
 						addErrorLine("Error Write!");
@@ -300,7 +305,7 @@ namespace BK7231Flasher
 		{
 			if(!WriteCmd(new byte[] { 0x07 }))
 				return false;
-			return xm.Send(stream, (uint)offset) == size;
+			return xm.Send(stream, (uint)offset, chipType == BKType.RTL8710B) == size;
 		}
 
 		private bool WriteCmd(byte[] cmd, byte ack = 0x06)
@@ -341,6 +346,64 @@ namespace BK7231Flasher
 				}
 			}
 			return false;
+		}
+
+		internal override byte[] ReadMAC()
+		{
+			var rf_efuse = ExecuteCommand(CMD_CUSTOM_READ_EFUSE, expectedReplyLen: chipType == BKType.RTL8710B ? 512 : 0x400);
+			if(rf_efuse == null) return null;
+			var mac = new byte[6];
+			Array.Copy(rf_efuse, 0x11A, mac, 0, 6);
+			return mac;
+		}
+
+		public byte[] ReadRomTarget(RomReadTarget target)
+		{
+			try
+			{
+				if(target == null)
+				{
+					addError("No ROM reader target selected." + Environment.NewLine);
+					return null;
+				}
+				if(doGenericSetup() == false)
+					return null;
+				if(Sync() == false)
+				{
+					logger.setState("Sync failed!", Color.Red);
+					return null;
+				}
+
+				string targetKindName = RomReadCatalog.GetKindDisplayName(target.Kind);
+				switch(target.Kind)
+				{
+					case RomReadKind.Rom:
+						return InternalReadRawMemory(target.Address ?? 0, target.Length ?? (chipType == BKType.RTL8720E ? 0x48000 : 0x80000), targetKindName);
+					case RomReadKind.Efuse:
+						return InternalReadEfusePayload(target.Length ?? (chipType == BKType.RTL8710B ? 0x200 : 0x400), targetKindName);
+					default:
+						addError("Selected " + chipType + " read target is not implemented." + Environment.NewLine);
+						return null;
+				}
+			}
+			catch(OperationCanceledException)
+			{
+				string targetKindName = target == null ? "Selected target" : RomReadCatalog.GetKindDisplayName(target.Kind);
+				addLogLine(targetKindName + " read cancelled by user.");
+				logger.setState("Cancelled", Color.DarkGray);
+				return null;
+			}
+			catch(Exception ex)
+			{
+				string targetKindName = target == null ? "Selected target" : RomReadCatalog.GetKindDisplayName(target.Kind);
+				addError(targetKindName + " read failed: " + ex.Message + Environment.NewLine);
+				logger.setState(targetKindName + " read failed.", Color.Red);
+				return null;
+			}
+			finally
+			{
+				try { closePort(); } catch { }
+			}
 		}
 	}
 }

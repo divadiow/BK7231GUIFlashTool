@@ -59,6 +59,7 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Flashers\ECRBaseFlasher.cs" />
+    <Compile Include="Flashers\OPLFlasher.cs" />
     <Compile Include="Flashers\RTLNFlasher.cs" />
     <Compile Include="Flashers\GD32VW553Flasher.cs" />
     <Compile Include="Misc\BL602FlashList.cs" />
@@ -78,6 +79,8 @@
     <Compile Include="Flashers\WMFlasher.cs" />
     <Compile Include="Flashers\ECR6600Flasher.cs" />
     <Compile Include="Flashers\BaseFlasher.cs" />
+    <Compile Include="Flashers\FlasherFactory.cs" />
+    <Compile Include="Flashers\IRomReadFlasher.cs" />
     <Compile Include="Flashers\BKChipIdentity.cs" />
     <Compile Include="Helpers\BitUtils.cs" />
     <Compile Include="Flashers\BK7231Flasher.cs" />
@@ -89,6 +92,9 @@
     <Compile Include="Utils\CH341DEV.cs" />
     <Compile Include="Helpers\Colors.cs" />
     <Compile Include="Misc\ConfigBase.cs" />
+    <Compile Include="Misc\FlashPlatformCatalog.cs" />
+    <Compile Include="Misc\PlatformBootModeGuide.cs" />
+    <Compile Include="Misc\RomReadCatalog.cs" />
     <Compile Include="Utils\CRC.cs" />
     <Compile Include="Utils\EasyFlash.cs" />
     <Compile Include="Helpers\FLoaders.cs" />
@@ -117,6 +123,9 @@
       <SubType>Form</SubType>
     </Compile>
     <Compile Include="FormMain_TuyaConfigExtractor.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="FormMain_BL602IoExtractor.cs">
       <SubType>Form</SubType>
     </Compile>
     <Compile Include="FormOBKConfig.cs">
@@ -163,6 +172,7 @@
     <Compile Include="Flashers\RTLFlasher.cs" />
     <Compile Include="Flashers\SPIFlasher.cs" />
     <Compile Include="Flashers\SPIFlasher_Beken.cs" />
+    <Compile Include="Utils\BL602IoAnalyzer.cs" />
     <Compile Include="Utils\TuyaConfig.cs" />
     <Compile Include="Utils\RFPartitionUtil.cs" />
     <Compile Include="Helpers\RichTextUtil.cs" />
@@ -233,6 +243,12 @@
     <EmbeddedResource Include="Floaders\GD32VW553_Stub.bin" />
     <EmbeddedResource Include="Floaders\RTL8721DA_Stub.bin" />
     <EmbeddedResource Include="Floaders\RTL8720E_Stub.bin" />
+    <EmbeddedResource Include="Floaders\RDA5981_Stub.bin" />
+    <EmbeddedResource Include="Floaders\Z2_XModem_Stub.bin" />
+    <EmbeddedResource Include="Floaders\Z2_XModem_Stub_z.bin" />
+    <EmbeddedResource Include="Floaders\RTL8710B_Stub.bin" />
+    <EmbeddedResource Include="Floaders\OPL1000A2_Stub.bin" />
+    <EmbeddedResource Include="Floaders\OPL1000A2_Stub_stage1.bin" />
     <None Include="packages.config" />
     <None Include="Properties\Settings.settings">
       <Generator>SettingsSingleFileGenerator</Generator>

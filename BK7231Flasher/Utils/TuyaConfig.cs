@@ -49,7 +49,6 @@ namespace BK7231Flasher
         const int USUAL_ESP8266_MAGIC_POSITION = 503808;
 
         const int KVHeaderSize = 0x12;
-
         int magicPosition = -1;
         byte[] descryptedRaw;
         // Always holds the decrypted config blob produced by TryVaultExtract() (vault) or alternate extractors (e.g. ESP8266 PSM).
@@ -84,6 +83,12 @@ namespace BK7231Flasher
             public int FlashOffset;
             public uint Seq;
             public byte[] Data;
+        }
+
+        class DeviceKeyCandidate
+        {
+            public byte[] Key;
+            public int Offset;
         }
 
         public sealed class KvEntry
@@ -586,8 +591,9 @@ List<KvEntry> GetVaultEntriesDedupedCached()
             if (data == null || data.Length < SECTOR_SIZE)
                 return result;
 
-            // Build an index of blocks by block_id.
+            // Duplicate block IDs are swap copies. The generation counter identifies the live copy.
             var blocksById = new Dictionary<ushort, int>();
+            var blockGenerations = new Dictionary<ushort, uint>();
             int blockCount = data.Length / SECTOR_SIZE;
 
             for (int b = 0; b < blockCount; b++)
@@ -598,8 +604,12 @@ List<KvEntry> GetVaultEntriesDedupedCached()
                     continue;
 
                 ushort blockId = ReadU16LE(data, blockStart + 8);
-                if (!blocksById.ContainsKey(blockId))
+                uint generation = ReadU32LE(data, blockStart + 10);
+                if (!blocksById.ContainsKey(blockId) || generation > blockGenerations[blockId])
+                {
                     blocksById[blockId] = blockStart;
+                    blockGenerations[blockId] = generation;
+                }
             }
 
             if (blocksById.Count == 0)
@@ -978,62 +988,88 @@ List<KvEntry> GetVaultEntriesDedupedCached()
             var time = Stopwatch.StartNew();
             var crcBadOffsets = new System.Collections.Concurrent.ConcurrentDictionary<int, byte>();
             int crcBadCount = 0;
-            foreach(var devKey in deviceKeys)
+            int bestKeyOffset = -1;
+            int bestDistanceFromKey = int.MaxValue;
+
+            void ScanCandidates()
             {
-                Parallel.ForEach(baseKeyCandidates, baseKey =>
+                foreach(var devKeyCandidate in deviceKeys)
                 {
-                    using var aes = Aes.Create();
-                    aes.Mode = CipherMode.ECB;
-                    aes.Padding = PaddingMode.None;
-                    aes.KeySize = 128;
-                    aes.Key = DeriveVaultKey(devKey, baseKey);
-                    using var decryptor = aes.CreateDecryptor();
-                    var blockBuffer = new byte[SECTOR_SIZE];
-                    var firstBlock = new byte[16];
-                    foreach(var magic in pageMagics)
+                    Parallel.ForEach(baseKeyCandidates, baseKey =>
                     {
-                        List<VaultPage> pages = new List<VaultPage>();
-
-                        for(int ofs = 0; ofs + SECTOR_SIZE <= flash.Length; ofs += SECTOR_SIZE)
+                        using var aes = Aes.Create();
+                        aes.Mode = CipherMode.ECB;
+                        aes.Padding = PaddingMode.None;
+                        aes.KeySize = 128;
+                        aes.Key = DeriveVaultKey(devKeyCandidate.Key, baseKey);
+                        using var decryptor = aes.CreateDecryptor();
+                        var blockBuffer = new byte[SECTOR_SIZE];
+                        var firstBlock = new byte[16];
+                        foreach(var magic in pageMagics)
                         {
-                            decryptor.TransformBlock(flash, ofs, 16, firstBlock, 0);
+                            List<VaultPage> pages = new List<VaultPage>();
 
-                            var pageMagic = ReadU32LE(firstBlock, 0);
-                            if(pageMagic != magic) continue;
-
-                            var dec = AESDecrypt(flash, ofs, decryptor, blockBuffer);
-
-                            if(dec == null) continue;
-
-                            var crc = ReadU32LE(dec, 4);
-                            if(!checkCRC(crc, dec, 8, dec.Length - 8))
+                            // A KV arena is a contiguous sector run. Do not merge matching pages from
+                            // separate regions, but keep the run intact when one sector has a bad CRC.
+                            void ConsiderRun()
                             {
-                                System.Threading.Interlocked.Increment(ref crcBadCount);
-                                // Don't log from worker threads. Buffer a bounded set of unique offsets and emit after the parallel scan.
-                                if(crcBadOffsets.Count < 200) crcBadOffsets.TryAdd(ofs, 0);
-                                continue;
+                                if(pages.Count == 0) return;
+
+                                int distanceFromKey = pages.Min(x => Math.Abs(x.FlashOffset - devKeyCandidate.Offset));
+                                lock(obj)
+                                {
+                                    if(pages.Count > bestCount ||
+                                        (pages.Count == bestCount && distanceFromKey < bestDistanceFromKey))
+                                    {
+                                        bestCount = pages.Count;
+                                        bestDistanceFromKey = distanceFromKey;
+                                        bestKeyOffset = devKeyCandidate.Offset;
+                                        bestPages = pages;
+                                    }
+                                }
                             }
 
-                            var seq = ReadU32LE(dec, 8);
+                            for(int ofs = 0; ofs + SECTOR_SIZE <= flash.Length; ofs += SECTOR_SIZE)
+                            {
+                                decryptor.TransformBlock(flash, ofs, 16, firstBlock, 0);
 
-                            pages.Add(new VaultPage
-                            {
-                                FlashOffset = ofs,
-                                Seq = seq,
-                                Data = dec
-                            });
-                        }
-                        lock(obj)
-                        {
-                            if(pages.Count > bestCount)
-                            {
-                                bestCount = pages.Count;
-                                bestPages = pages;
+                                var pageMagic = ReadU32LE(firstBlock, 0);
+                                if(pageMagic != magic)
+                                {
+                                    ConsiderRun();
+                                    pages = new List<VaultPage>();
+                                    continue;
+                                }
+
+                                var dec = AESDecrypt(flash, ofs, decryptor, blockBuffer);
+
+                                if(dec == null) continue;
+
+                                var crc = ReadU32LE(dec, 4);
+                                if(!checkCRC(crc, dec, 8, dec.Length - 8))
+                                {
+                                    System.Threading.Interlocked.Increment(ref crcBadCount);
+                                    // Don't log from worker threads. Buffer a bounded set of unique offsets and emit after the parallel scan.
+                                    if(crcBadOffsets.Count < 200) crcBadOffsets.TryAdd(ofs, 0);
+                                    continue;
+                                }
+
+                                var seq = ReadU32LE(dec, 8);
+
+                                pages.Add(new VaultPage
+                                {
+                                    FlashOffset = ofs,
+                                    Seq = seq,
+                                    Data = dec
+                                });
                             }
+                            ConsiderRun();
                         }
-                    }
-                });
+                    });
+                }
             }
+
+            ScanCandidates();
             time.Stop();
 
             // Emit buffered CRC warnings (avoid UI/threading issues from logging inside Parallel.ForEach)
@@ -1060,9 +1096,11 @@ List<KvEntry> GetVaultEntriesDedupedCached()
             FormMain.Singleton?.addLog($"Decryption took {time.ElapsedMilliseconds} ms" + Environment.NewLine, System.Drawing.Color.DarkSlateGray);
 
             var dataFlashOffset = bestPages.Min(x => x.FlashOffset);
-            magicPosition = magicPosition < dataFlashOffset ? magicPosition : dataFlashOffset;
+            if(bestKeyOffset >= 0)
+                magicPosition = bestKeyOffset;
+            else
+                magicPosition = magicPosition < dataFlashOffset ? magicPosition : dataFlashOffset;
             FormMain.Singleton?.addLog($"Tuya config extractor - magic is at {magicPosition} (0x{magicPosition:X}) " + Environment.NewLine, System.Drawing.Color.DarkSlateGray);
-
             if(bestPages.Count < 2)
             {
                 FormMain.Singleton?.addLog("Failed to extract Tuya keys - config not found" + Environment.NewLine, System.Drawing.Color.Orange);
@@ -1097,9 +1135,9 @@ List<KvEntry> GetVaultEntriesDedupedCached()
             return vaultKey;
         }
 
-        List<byte[]> FindDeviceKeys(byte[] flash)
+        List<DeviceKeyCandidate> FindDeviceKeys(byte[] flash)
         {
-            var keys = new List<byte[]>();
+            var keys = new List<DeviceKeyCandidate>();
             using var aes = Aes.Create();
             aes.Mode = CipherMode.ECB;
             aes.Padding = PaddingMode.None;
@@ -1125,7 +1163,11 @@ List<KvEntry> GetVaultEntriesDedupedCached()
                 var crc = ReadU32LE(dec, 4);
                 if(checkCRC(crc, dk, 0, 16))
                 {
-                    keys.Add(dk);
+                    keys.Add(new DeviceKeyCandidate
+                    {
+                        Key = dk,
+                        Offset = ofs
+                    });
                     magicPosition = ofs;
                 }
                 //else

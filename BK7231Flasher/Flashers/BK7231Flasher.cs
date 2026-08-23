@@ -8,7 +8,7 @@ using System.Threading;
 
 namespace BK7231Flasher
 {
-    public class BK7231Flasher : BaseFlasher
+    public class BK7231Flasher : BaseFlasher, IRomReadFlasher
     {
         public static Random rand = new Random(Guid.NewGuid().GetHashCode());
 
@@ -20,6 +20,21 @@ namespace BK7231Flasher
         const int BK7252_MAX_FLASH_SIZE = 0x400000;
         const int READ_RESPONSE_HEADER_SIZE = 15;
         const int BK7252_READ_ATTEMPTS = 20;
+        const int BEKEN_EFUSE_SIZE = 0x20;
+        const int BK7258_EFUSE_SIZE = 0x04;
+        const int SCTRL_EFUSE_CTRL = 0x00800074;
+        const int SCTRL_EFUSE_OPTR = 0x00800078;
+        const int BK7258_SYS_DEVICE_CLK_ENABLE = 0x54010030;
+        const int BK7258_SYS_POWER_SLEEP_WAKEUP = 0x54010040;
+        const int BK7258_EFUSE_CLOCK_ENABLE = 1 << 7;
+        const int BK7258_OTP_CLOCK_ENABLE = 1 << 15;
+        const int BK7258_OTP_POWER_DOWN = 1 << 3;
+        const int BK7258_EFUSE_CTRL = 0x54880010;
+        const int BK7258_EFUSE_OPTR = 0x54880014;
+        const int BK7258_OTP1_DATA_BASE = 0x5B100400;
+        const int BK7258_OTP1_SIZE = 0x400;
+        const int BK7258_OTP2_DATA_BASE = 0x5B010000;
+        const int BK7258_OTP2_SIZE = 0xC00;
         public static int SECTOR_SIZE = 0x1000;
         public static int BLOCK_SIZE = 0x10000;
         public static int SECTORS_PER_BLOCK = BLOCK_SIZE / SECTOR_SIZE;
@@ -957,7 +972,7 @@ namespace BK7231Flasher
                 {
                     return false;
                 }
-                if (chipType != BKType.BK7238 && chipType != BKType.BK7252N)
+                if (chipType != BKType.BK7236 && chipType != BKType.BK7238 && chipType != BKType.BK7252N && chipType != BKType.BK7258)
                 {
                     addLog("Going to read encryption key..." + Environment.NewLine);
                     string key = readEncryptionKey(out var coeffs);
@@ -1317,10 +1332,293 @@ namespace BK7231Flasher
             addSuccess("Write success!");
             return true;
         }
+        public byte[] ReadRomTarget(RomReadTarget target)
+        {
+            try
+            {
+                return ReadRomTargetInternal(target);
+            }
+            catch (Exception ex)
+            {
+                string targetKindName = target == null ? "Selected target" : RomReadCatalog.GetKindDisplayName(target.Kind);
+                addError(targetKindName + " read failed: " + ex.Message + Environment.NewLine);
+                logger.setState(targetKindName + " read failed.", Color.Red);
+                return null;
+            }
+        }
+
+        byte[] ReadRomTargetInternal(RomReadTarget target)
+        {
+            if (target == null)
+            {
+                addError("No ROM reader target selected." + Environment.NewLine);
+                return null;
+            }
+            if (doGenericSetup() == false)
+            {
+                return null;
+            }
+            int offset = target.Address ?? 0;
+            int length = target.Length ?? 0;
+            switch (target.Kind)
+            {
+                case RomReadKind.Rom:
+                    return ReadBekenRom(offset, length);
+                case RomReadKind.Efuse:
+                    return ReadBekenEfuse(offset, length);
+                case RomReadKind.Otp:
+                    return ReadBK7258Otp(offset, length);
+                default:
+                    addError("Selected read target is not implemented." + Environment.NewLine);
+                    return null;
+            }
+        }
+
+        byte[] ReadBekenRom(int offset, int length)
+        {
+            if ((offset % 4) != 0 || (length % 4) != 0)
+            {
+                throw new InvalidOperationException(chipType + " ROM reads must be 4-byte aligned.");
+            }
+            if (offset < 0 || length <= 0 || offset > int.MaxValue - length)
+            {
+                throw new InvalidOperationException(chipType + " ROM read range is out of bounds.");
+            }
+            logger.setState("Reading ROM...", Color.Transparent);
+            logger.setProgress(0, length);
+            addLog("Reading " + chipType + " ROM from " + formatHex(offset) + ", length " + formatHex(length) + Environment.NewLine);
+            byte[] result = new byte[length];
+            for (int ofs = 0; ofs < length; ofs += 4)
+            {
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    logger.setState("ROM read cancelled.", Color.Yellow);
+                    return null;
+                }
+                byte[] word = ReadFlashReg(offset + ofs);
+                if (word == null || word.Length < 4)
+                {
+                    throw new IOException(chipType + " ROM read failed at " + formatHex(offset + ofs));
+                }
+                Buffer.BlockCopy(word, 0, result, ofs, 4);
+                logger.setProgress(ofs + 4, length);
+            }
+            if ((chipType == BKType.BK7236 || chipType == BKType.BK7258)
+                && (result.All(value => value == 0) || result.All(value => value == 0xFF)))
+            {
+                throw new IOException(chipType + " ROM read from " + formatHex(offset) + " returned only blank bytes.");
+            }
+            logger.setState("ROM read success!", Color.Green);
+            return result;
+        }
+
+        byte[] ReadBekenEfuse(int offset, int length)
+        {
+            int efuseSize = chipType == BKType.BK7258 ? BK7258_EFUSE_SIZE : BEKEN_EFUSE_SIZE;
+            if (offset < 0 || length <= 0 || offset + length > efuseSize)
+            {
+                throw new InvalidOperationException(chipType + " eFuse read range is out of bounds.");
+            }
+            logger.setState("Reading eFuse...", Color.Transparent);
+            logger.setProgress(0, length);
+            addLog("Reading " + chipType + " eFuse from " + formatHex(offset) + ", length " + formatHex(length) + Environment.NewLine);
+            if (chipType == BKType.BK7258)
+            {
+                return ReadBK7258Efuse(offset, length);
+            }
+            byte[] result = new byte[length];
+            int efuseCtrl = SCTRL_EFUSE_CTRL;
+            int efuseOptr = SCTRL_EFUSE_OPTR;
+            for (int ofs = 0; ofs < length; ofs++)
+            {
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    logger.setState("eFuse read cancelled.", Color.Yellow);
+                    return null;
+                }
+                result[ofs] = ReadBekenEfuseByte(efuseCtrl, efuseOptr, offset + ofs);
+                logger.setProgress(ofs + 1, length);
+            }
+            logger.setState("eFuse read success!", Color.Green);
+            return result;
+        }
+
+        byte[] ReadBK7258Efuse(int offset, int length)
+        {
+            int originalClock = ReadFlashRegRequiredInt(BK7258_SYS_DEVICE_CLK_ENABLE, "BK7258 SYS clock enable");
+            bool bClockChanged = (originalClock & BK7258_EFUSE_CLOCK_ENABLE) == 0;
+            if (bClockChanged && WriteFlashReg(BK7258_SYS_DEVICE_CLK_ENABLE, originalClock | BK7258_EFUSE_CLOCK_ENABLE) == false)
+            {
+                throw new IOException("BK7258 eFuse clock enable failed.");
+            }
+
+            try
+            {
+                byte[] result = new byte[length];
+                for (int ofs = 0; ofs < length; ofs++)
+                {
+                    if (cancellationToken.IsCancellationRequested)
+                    {
+                        logger.setState("eFuse read cancelled.", Color.Yellow);
+                        return null;
+                    }
+                    result[ofs] = ReadBK7258EfuseByte(offset + ofs);
+                    logger.setProgress(ofs + 1, length);
+                }
+                logger.setState("eFuse read success!", Color.Green);
+                return result;
+            }
+            finally
+            {
+                WriteFlashReg(BK7258_EFUSE_CTRL, 0);
+                if (bClockChanged)
+                {
+                    WriteFlashReg(BK7258_SYS_DEVICE_CLK_ENABLE, originalClock);
+                }
+            }
+        }
+
+        byte ReadBK7258EfuseByte(int addr)
+        {
+            // Read direction only: DIR, write data and VDD2.5 remain clear.
+            int command = ((addr & 0x1F) << 8) | 1;
+            if (WriteFlashReg(BK7258_EFUSE_CTRL, command) == false)
+            {
+                throw new IOException("BK7258 eFuse control write failed at byte " + addr);
+            }
+
+            Stopwatch waitTimer = Stopwatch.StartNew();
+            int control;
+            do
+            {
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    throw new OperationCanceledException("eFuse read cancelled by user.");
+                }
+                if (waitTimer.ElapsedMilliseconds > 1000)
+                {
+                    throw new TimeoutException("BK7258 eFuse read timed out at byte " + addr);
+                }
+                control = ReadFlashRegRequiredInt(BK7258_EFUSE_CTRL, "BK7258 eFuse control");
+            } while ((control & 1) != 0);
+
+            int operationResult = ReadFlashRegRequiredInt(BK7258_EFUSE_OPTR, "BK7258 eFuse result");
+            if ((operationResult & 0x100) == 0)
+            {
+                throw new IOException("BK7258 eFuse byte " + addr + " was not marked valid: " + formatHex(operationResult));
+            }
+            return (byte)(operationResult & 0xFF);
+        }
+
+        byte[] ReadBK7258Otp(int offset, int length)
+        {
+            int expectedLength = BK7258_OTP1_SIZE + BK7258_OTP2_SIZE;
+            if (offset != 0 || length != expectedLength)
+            {
+                throw new InvalidOperationException("BK7258 OTP read must include the complete OTP1 and OTP2 windows.");
+            }
+
+            logger.setState("Reading OTP...", Color.Transparent);
+            logger.setProgress(0, length);
+            addLog("Reading BK7258 OTP1 APB and OTP2 AHB windows, combined length " + formatHex(length) + Environment.NewLine);
+
+            int originalClock = ReadFlashRegRequiredInt(BK7258_SYS_DEVICE_CLK_ENABLE, "BK7258 SYS clock enable");
+            int originalPower = ReadFlashRegRequiredInt(BK7258_SYS_POWER_SLEEP_WAKEUP, "BK7258 SYS power control");
+            bool bClockChanged = (originalClock & BK7258_OTP_CLOCK_ENABLE) == 0;
+            bool bPowerChanged = (originalPower & BK7258_OTP_POWER_DOWN) != 0;
+
+            if (bClockChanged && WriteFlashReg(BK7258_SYS_DEVICE_CLK_ENABLE, originalClock | BK7258_OTP_CLOCK_ENABLE) == false)
+            {
+                throw new IOException("BK7258 OTP clock enable failed.");
+            }
+            if (bPowerChanged && WriteFlashReg(BK7258_SYS_POWER_SLEEP_WAKEUP, originalPower & ~BK7258_OTP_POWER_DOWN) == false)
+            {
+                if (bClockChanged)
+                {
+                    WriteFlashReg(BK7258_SYS_DEVICE_CLK_ENABLE, originalClock);
+                }
+                throw new IOException("BK7258 OTP power enable failed.");
+            }
+
+            try
+            {
+                Thread.Sleep(2);
+                byte[] result = new byte[length];
+                for (int ofs = 0; ofs < length; ofs += 4)
+                {
+                    if (cancellationToken.IsCancellationRequested)
+                    {
+                        logger.setState("OTP read cancelled.", Color.Yellow);
+                        return null;
+                    }
+                    int address = ofs < BK7258_OTP1_SIZE
+                        ? BK7258_OTP1_DATA_BASE + ofs
+                        : BK7258_OTP2_DATA_BASE + ofs - BK7258_OTP1_SIZE;
+                    byte[] word = ReadFlashReg(address);
+                    if (word == null || word.Length < 4)
+                    {
+                        throw new IOException("BK7258 OTP read failed at " + formatHex(address));
+                    }
+                    Buffer.BlockCopy(word, 0, result, ofs, 4);
+                    logger.setProgress(ofs + 4, length);
+                }
+                logger.setState("OTP read success!", Color.Green);
+                return result;
+            }
+            finally
+            {
+                if (bPowerChanged)
+                {
+                    WriteFlashReg(BK7258_SYS_POWER_SLEEP_WAKEUP, originalPower);
+                }
+                if (bClockChanged)
+                {
+                    WriteFlashReg(BK7258_SYS_DEVICE_CLK_ENABLE, originalClock);
+                }
+            }
+        }
+
+        int ReadFlashRegRequiredInt(int address, string registerName)
+        {
+            byte[] value = ReadFlashReg(address);
+            if (value == null || value.Length < 4)
+            {
+                throw new IOException(registerName + " read failed at " + formatHex(address));
+            }
+            return (value[3] << 24) | (value[2] << 16) | (value[1] << 8) | value[0];
+        }
+
+        byte ReadBekenEfuseByte(int efuseCtrl, int efuseOptr, int addr)
+        {
+            int reg = ReadFlashRegInt(efuseCtrl);
+            reg = (reg & ~0x1F02) | (addr << 8) | 1;
+            if (WriteFlashReg(efuseCtrl, reg) == false)
+            {
+                throw new IOException(chipType + " eFuse control write failed at " + addr);
+            }
+            Stopwatch waitTimer = Stopwatch.StartNew();
+            do
+            {
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    throw new OperationCanceledException("eFuse read cancelled by user.");
+                }
+                if (waitTimer.ElapsedMilliseconds > 1000)
+                {
+                    throw new TimeoutException(chipType + " eFuse read timed out at " + addr);
+                }
+                reg = ReadFlashRegInt(efuseCtrl);
+            } while ((reg & 1) != 0);
+            reg = ReadFlashRegInt(efuseOptr);
+            if ((reg & 0x100) == 0)
+            {
+                throw new IOException(chipType + " eFuse data " + addr + " invalid: " + formatHex(reg));
+            }
+            return (byte)(reg & 0xff);
+        }
+
         string readEncryptionKey(out uint[] coeffs)
         {
-            int SCTRL_EFUSE_CTRL = 0x00800074;
-            int SCTRL_EFUSE_OPTR = 0x00800078;
             byte[] efuse = new byte[16];
             for (int addr = 0; addr < 16; addr++)
             {
