@@ -269,11 +269,11 @@ namespace BK7231Flasher
                 Environment.Exit(1);
                 return;
             }
-            if ((chipType == BKType.BekenSPI || chipType == BKType.GenericSPI)
+            if (Requires4KAlignedRange(chipType)
                 && (operation == CliOperation.CustomRead || operation == CliOperation.CustomWrite || operation == CliOperation.Test)
                 && ((ofs % BK7231Flasher.SECTOR_SIZE) != 0 || (len % BK7231Flasher.SECTOR_SIZE) != 0))
             {
-                Console.Error.WriteLine("Error: BekenSPI/GenericSPI custom operations require --addr and --size to be 0x1000-aligned.");
+                Console.Error.WriteLine("Error: Beken custom operations require --addr and --size to be 0x1000-aligned.");
                 Environment.Exit(1);
                 return;
             }
@@ -402,8 +402,44 @@ namespace BK7231Flasher
 
             flasher.doReadAndWrite(startSector, sectors, writeFile, WriteMode.OnlyWrite);
 
+            if (DidBekenWriteSucceed(flasher) == false)
+            {
+                Console.Error.WriteLine("\nWrite failed.");
+                return 1;
+            }
+
             Console.WriteLine("\nWrite completed successfully.");
             return 0;
+        }
+
+        static bool Requires4KAlignedRange(BKType chipType)
+        {
+            switch (chipType)
+            {
+                case BKType.BK7231M:
+                case BKType.BK7231N:
+                case BKType.BK7231T:
+                case BKType.BK7231U:
+                case BKType.BK7236:
+                case BKType.BK7238:
+                case BKType.BK7252:
+                case BKType.BK7252N:
+                case BKType.BK7258:
+                case BKType.BekenSPI:
+                case BKType.GenericSPI:
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        static bool DidBekenWriteSucceed(BaseFlasher flasher)
+        {
+            if (flasher is BK7231Flasher bkFlasher)
+            {
+                return bkFlasher.LastOperationSucceeded;
+            }
+            return true;
         }
 
         /// <summary>
@@ -482,6 +518,12 @@ namespace BK7231Flasher
             flasher.setCustomWriteMode(true);
             flasher.doReadAndWrite(startSector, sectors, writeFile, WriteMode.OnlyWrite);
 
+            if (DidBekenWriteSucceed(flasher) == false)
+            {
+                Console.Error.WriteLine("\nCustom write failed.");
+                return 1;
+            }
+
             Console.WriteLine("\nCustom write completed successfully.");
             return 0;
         }
@@ -506,6 +548,11 @@ namespace BK7231Flasher
 
                 Console.WriteLine("Step 1/3: Writing pattern...");
                 flasher.doReadAndWrite(startSector, sectors, tempFile, WriteMode.OnlyWrite);
+                if (DidBekenWriteSucceed(flasher) == false)
+                {
+                    Console.Error.WriteLine("Error: Pattern write failed.");
+                    return 1;
+                }
 
                 Console.WriteLine("\nStep 2/3: Reading back...");
                 flasher.doRead(startSector, sectors, false);

@@ -17,6 +17,13 @@ namespace BK7231Flasher
             Bl2,
         }
 
+        enum ModernPageCRCResult
+        {
+            Match,
+            Mismatch,
+            TransportError,
+        }
+
         public static Random rand = new Random(Guid.NewGuid().GetHashCode());
 
         bool bDebugUART;
@@ -28,8 +35,12 @@ namespace BK7231Flasher
         const int READ_RESPONSE_HEADER_SIZE = 15;
         const int BK7252_READ_ATTEMPTS = 20;
         const int MODERN_READ_ATTEMPTS = 20;
+        const int MODERN_READ_RANGE_ATTEMPTS = 2;
         const int MODERN_WRITE_ATTEMPTS = 5;
-        const int MODERN_ERASE_ATTEMPTS = 5;
+        const int MODERN_MID_ATTEMPTS = 5;
+        const int MODERN_MID_RETRY_DELAY_MS = 200;
+        const int ERASE_ATTEMPTS = 5;
+        const float MODERN_COMMAND_TIMEOUT = 0.5f;
         const int BEKEN_EFUSE_SIZE = 0x20;
         const int BK7258_EFUSE_SIZE = 0x04;
         const int SCTRL_EFUSE_CTRL = 0x00800074;
@@ -56,6 +67,7 @@ namespace BK7231Flasher
         int bk7252ReadAddressBase = DEFAULT_FLASH_SIZE;
         BekenLinkStage observedLinkStage = BekenLinkStage.Unknown;
         bool modernModificationSessionActive;
+        public bool LastOperationSucceeded { get; private set; }
         bool openPort()
         {
             // Close any previously open port before re-opening
@@ -542,22 +554,6 @@ namespace BK7231Flasher
 
             return true;
         }
-        uint CheckRespond_CheckCRC(byte[] buf, int a0, int a1)
-        {
-            byte[] cBuf = new byte[] { 0x04, 0x0e, 0x05, 0x01, 0xe0, 0xfc, (byte)CommandCode.CheckCRC };
-            cBuf[2] = 3 + 1 + 4;
-            if (cBuf.Length <= buf.Length && ByteArrayCompare(cBuf, buf, cBuf.Length))
-            {
-                //addLog("CheckRespond_CheckCRC: OK");
-                uint r = buf[10];
-                r = (r << 8) + buf[9];
-                r = (r << 8) + buf[8];
-                r = (r << 8) + buf[7];
-                return r;
-            }
-            addLog("CheckRespond_CheckCRC: ERROR" + Environment.NewLine);
-            return 0;
-        }
         bool CheckRespond_WriteReg(byte[] buf, int regAddr, int val)
         {
             byte[] cBuf = new byte[15] { 0x04, 0x0e, 0x05, 0x01, 0xe0, 0xfc, (byte)CommandCode.WriteReg,
@@ -609,8 +605,8 @@ namespace BK7231Flasher
             byte[] cBuf = new byte[] { 0x04, 0x0e, 0xff, 0x01, 0xe0, 0xfc, 0xf4,
                 (byte)(1 + 1 + (1 + 1)) & 0xff, ((1 + 1 + (1 + 1)) >> 8) & 0xff,
                 (byte)CommandCode.FlashWriteSR};
-            if (cBuf.Length <= buf.Length && ByteArrayCompare(cBuf, buf, cBuf.Length) 
-                && val == buf[12] && regAddr == buf[11])
+            if (buf.Length >= 13 && cBuf.Length <= buf.Length && ByteArrayCompare(cBuf, buf, cBuf.Length)
+                && buf[10] == 0 && regAddr == buf[11] && (byte)val == buf[12])
             {
                 byte[] ret = new byte[] { buf[11] };
                 return ret;
@@ -623,7 +619,8 @@ namespace BK7231Flasher
             byte[] cBuf = new byte[] { 0x04, 0x0e, 0xff, 0x01, 0xe0, 0xfc, 0xf4,
                 (byte)(1 + 1 + (1 + 2)) & 0xff, ((1 + 1 + (1 + 2)) >> 8) & 0xff,
                 (byte)CommandCode.FlashWriteSR};
-            if (cBuf.Length <= buf.Length && ByteArrayCompare(cBuf, buf, cBuf.Length)
+            if (buf.Length >= 14 && cBuf.Length <= buf.Length && ByteArrayCompare(cBuf, buf, cBuf.Length)
+                && buf[10] == 0 && regAddr == buf[11]
                 && ((byte)(val & 0xFF) == buf[12]) && ((byte)((val >> 8) & 0xFF) == buf[13]))
             {
                 byte[] ret = new byte[] { buf[11] };
@@ -653,9 +650,10 @@ namespace BK7231Flasher
         {
             byte[] cBuf = new byte[] { 0x04,0x0e,0xff,0x01,0xe0,0xfc,0xf4,(1+1+(1+1))&0xff,
                    ((1+1+(1+1))>>8)&0xff,(byte)CommandCode.FlashReadSR};
-            if (cBuf.Length <= buf.Length && ByteArrayCompare(cBuf, buf, cBuf.Length))
+            if (buf.Length >= 13 && cBuf.Length <= buf.Length && ByteArrayCompare(cBuf, buf, cBuf.Length)
+                && buf[10] == 0 && addr == buf[11])
             {
-                byte[] ret = new byte[2] { buf[10], buf[12] };
+                byte[] ret = new byte[2] { buf[11], buf[12] };
                 return ret;
             }
             addError("CheckRespond_FlashReadSR: bad value returned?" + Environment.NewLine);
@@ -751,32 +749,10 @@ namespace BK7231Flasher
 
             return cBuf.Length <= buf.Length && ByteArrayCompare(cBuf, buf);
         }
-        bool CheckRespond_EraseSector4K(byte[] buf, int addr)
+        bool CheckRespond_EraseSector4K(byte[] buf)
         {
-            byte[] cBuf = new byte[] { 0x04, 0x0e, 0xff, 0x01, 0xe0, 0xfc, 0xf4, 0x06, 0x00, (byte)(CommandCode.FlashErase4K) };
-            if (cBuf.Length > buf.Length || ByteArrayCompare(cBuf, buf, cBuf.Length) == false)
-            {
-                return false;
-            }
-            if (isModernFullProtocolChip())
-            {
-                if (buf.Length < 15)
-                {
-                    addWarning("FlashErase4K returned a short response." + Environment.NewLine);
-                    return false;
-                }
-                if (buf[10] != 0)
-                {
-                    addWarning("FlashErase4K returned status " + buf[10] + " at " + formatHex(addr) + "." + Environment.NewLine);
-                    return false;
-                }
-                if (readInt32LE(buf, 11) != addr)
-                {
-                    addWarning("FlashErase4K returned a different address." + Environment.NewLine);
-                    return false;
-                }
-            }
-            return true;
+            byte[] cBuf = new byte[] { 0x04, 0x0e, 0xff, 0x01, 0xe0, 0xfc, 0xf4, 0x06, 0x00, (byte)(CommandCode.FlashErase4K)  };
+            return cBuf.Length <= buf.Length && ByteArrayCompare(cBuf, buf, cBuf.Length);
         }
         bool CheckRespond_FlashErase(byte[] buf, int addr, int szcmd)
         {
@@ -902,7 +878,7 @@ namespace BK7231Flasher
             }
             if (chipIdentity != null && chipIdentity.HasChipId)
             {
-                addSuccess("Full BootROM command capability confirmed: CMD_ReadReg returned a usable chip ID."
+                addSuccess("CMD_ReadReg capability confirmed by a usable chip ID."
                     + Environment.NewLine);
             }
             else
@@ -956,102 +932,71 @@ namespace BK7231Flasher
             }
             return false;
         }
-        public override void doWrite(int startSector, byte [] data)
+        bool runModificationOperation(Func<bool> operation)
         {
+            LastOperationSucceeded = false;
             try
             {
-                doWriteInternal(startSector, data);
+                LastOperationSucceeded = operation();
             }
             catch (Exception ex)
             {
                 addError("Exception caught: " + ex.ToString() + Environment.NewLine);
-            }
-            finally
-            {
-                restoreFlashProtection();
-            }
-        }
-        public override void doTestReadWrite(int startSector = 0x000, int sectors = 10)
-        {
-            try
-            {
-                doTestReadWriteInternal(startSector, sectors);
-            }
-            catch (Exception ex)
-            {
-                addError("Exception caught: " + ex.ToString() + Environment.NewLine);
-            }
-            finally
-            {
-                restoreFlashProtection();
-            }
-        }
-        
-        public override void doReadAndWrite(int startSector, int sectors, string sourceFileName, WriteMode rwMode)
-        {
-            try
-            {
-                doReadAndWriteInternal(startSector, sectors, sourceFileName, rwMode);
-            }
-            catch (Exception ex)
-            {
-                addError("Exception caught: " + ex.ToString() + Environment.NewLine);
-            }
-            finally
-            {
-                restoreFlashProtection();
-            }
-        }
-        
-        public override bool doErase(int startSector, int sectors, bool bAll)
-        {
-            bool success = false;
-            try
-            {
-                logger.setProgress(0, sectors);
-                addLog("Erase started with ofs " + formatHex(startSector) + " and requested len in sectors " + sectors + Environment.NewLine);
-                if (doGenericSetup(true))
-                {
-                    if (chipType == BKType.BK7252)
-                    {
-                        detectBK7252UFlashSize();
-                    }
-                    if (bAll)
-                    {
-                        if (startSector < 0 || startSector >= FLASH_SIZE)
-                        {
-                            addError("Erase-all start address is outside flash." + Environment.NewLine);
-                        }
-                        else
-                        {
-                            sectors = (FLASH_SIZE - startSector) / SECTOR_SIZE;
-                            logger.setProgress(0, sectors);
-                            addLog("Erase-all using flash size " + formatFlashSize(FLASH_SIZE)
-                                + ", start " + formatHex(startSector)
-                                + ", sectors " + sectors
-                                + ", end " + formatHex(startSector + sectors * SECTOR_SIZE) + Environment.NewLine);
-                            success = doEraseInternal(startSector, sectors);
-                        }
-                    }
-                    else
-                    {
-                        success = doEraseInternal(startSector, sectors);
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                addError("Exception caught: " + ex.ToString() + Environment.NewLine);
-                success = false;
             }
             finally
             {
                 if (restoreFlashProtection() == false)
                 {
-                    success = false;
+                    LastOperationSucceeded = false;
                 }
             }
-            return success;
+            return LastOperationSucceeded;
+        }
+
+        public override void doWrite(int startSector, byte [] data)
+        {
+            runModificationOperation(() => doWriteInternal(startSector, data));
+        }
+        public override void doTestReadWrite(int startSector = 0x000, int sectors = 10)
+        {
+            runModificationOperation(() => doTestReadWriteInternal(startSector, sectors));
+        }
+        
+        public override void doReadAndWrite(int startSector, int sectors, string sourceFileName, WriteMode rwMode)
+        {
+            runModificationOperation(() => doReadAndWriteInternal(startSector, sectors, sourceFileName, rwMode));
+        }
+        
+        public override bool doErase(int startSector, int sectors, bool bAll)
+        {
+            return runModificationOperation(() =>
+            {
+                logger.setProgress(0, sectors);
+                addLog("Erase started with ofs " + formatHex(startSector) + " and requested len in sectors " + sectors + Environment.NewLine);
+                if (doGenericSetup(true) == false)
+                {
+                    return false;
+                }
+                if (chipType == BKType.BK7252)
+                {
+                    detectBK7252UFlashSize();
+                }
+                if (bAll)
+                {
+                    if (startSector < 0 || startSector >= FLASH_SIZE)
+                    {
+                        addError("Erase-all start address is outside flash." + Environment.NewLine);
+                        return false;
+                    }
+                    sectors = (FLASH_SIZE - startSector) / SECTOR_SIZE;
+                    logger.setProgress(0, sectors);
+                    addLog("Erase-all using flash size " + formatFlashSize(FLASH_SIZE)
+                        + ", start " + formatHex(startSector)
+                        + ", sectors " + sectors
+                        + ", end " + formatHex(startSector + sectors * SECTOR_SIZE) + Environment.NewLine);
+                }
+                return doEraseInternal(startSector, sectors);
+            });
         }
         public override void doRead(int startSector = 0x000, int sectors = 10, bool fullRead = false)
         {
@@ -1118,31 +1063,24 @@ namespace BK7231Flasher
                 return false;
             }
             Thread.Sleep(50);
-            int attempt = 0;
             int maxAttempts = 10;
-            while (true)
+            for (int attempt = 1; attempt <= maxAttempts; attempt++)
             {
                 addSuccess("Going to set baud rate setting (" + baudrate + ")!" + Environment.NewLine);
                 logger.setState("Setting baud rate...", Color.Transparent);
-                if (setBaudRateIfNeeded() == false)
+                if (setBaudRateIfNeeded())
                 {
-                    addError("Failed to set baud rate!" + Environment.NewLine);
-                    logger.setState("Failed to set baud rate!", Color.Red);
-                    if (attempt >= maxAttempts)
-                    {
-                        return false;
-                    }
+                    Thread.Sleep(50);
+                    return true;
+                }
+                addError("Failed to set baud rate!" + Environment.NewLine);
+                logger.setState("Failed to set baud rate!", Color.Red);
+                if (attempt < maxAttempts)
+                {
                     Thread.Sleep(50);
                 }
-                else
-                {
-                    break;
-                }
-
-                attempt++;
             }
-            Thread.Sleep(50);
-            return true;
+            return false;
         }
         
         bool doGenericSetup(bool prepareForModification = true, bool loadExternalFlashInfo = true)
@@ -1326,7 +1264,6 @@ namespace BK7231Flasher
             if (setProtectState(true) == false)
             {
                 addError("Unable to clear flash protection; erase/write has been aborted." + Environment.NewLine);
-                restoreFlashProtection();
                 return false;
             }
             return true;
@@ -1339,24 +1276,31 @@ namespace BK7231Flasher
                 return true;
             }
             modernModificationSessionActive = false;
-            if (flashInfo == null || serial == null || serial.IsOpen == false)
+            try
             {
-                addError("Could not restore flash protection because the active flash session is unavailable." + Environment.NewLine);
-                return false;
+                if (flashInfo == null || serial == null || serial.IsOpen == false)
+                {
+                    addError("Could not restore flash protection because the active flash session is unavailable." + Environment.NewLine);
+                    return false;
+                }
+                addLog("Restoring flash protection..." + Environment.NewLine);
+                for (int attempt = 1; attempt <= 2; attempt++)
+                {
+                    if (setProtectState(false))
+                    {
+                        addSuccess("Flash protection restored." + Environment.NewLine);
+                        return true;
+                    }
+                    if (attempt < 2)
+                    {
+                        addWarning("Flash protection restore failed; retrying." + Environment.NewLine);
+                        Thread.Sleep(20);
+                    }
+                }
             }
-            addLog("Restoring flash protection..." + Environment.NewLine);
-            for (int attempt = 1; attempt <= 2; attempt++)
+            catch (Exception ex)
             {
-                if (setProtectState(false))
-                {
-                    addSuccess("Flash protection restored." + Environment.NewLine);
-                    return true;
-                }
-                if (attempt < 2)
-                {
-                    addWarning("Flash protection restore failed; retrying." + Environment.NewLine);
-                    Thread.Sleep(20);
-                }
+                addError("Flash protection restore failed: " + ex.Message + Environment.NewLine);
             }
             logger.setState("Flash protection restore failed.", Color.Red);
             addError("Flash modification completed, but protection could not be restored." + Environment.NewLine);
@@ -1414,7 +1358,10 @@ namespace BK7231Flasher
                 // set (un)protect word
                 int srt = (int)(sr & (flashInfo.cwMsk ^ 0xffffffff));
                 srt |= BKFlashList.BFD(cw, flashInfo.sb, flashInfo.lb);
-                WriteFlashSR(flashInfo.szSR, flashInfo.cwdWr[0], srt & 0xffff);
+                if (WriteFlashSR(flashInfo.szSR, flashInfo.cwdWr[0], srt & 0xffff) == false)
+                {
+                    addWarning("SetProtectState(" + unprotect + ") write failed; retrying." + Environment.NewLine);
+                }
 
                 System.Threading.Thread.Sleep(10);
             }
@@ -1989,10 +1936,14 @@ namespace BK7231Flasher
         {
             for(int attempt = 0; attempt <= retries; attempt++)
             {
+                if(cancellationToken.IsCancellationRequested)
+                {
+                    return null;
+                }
                 byte[] res = readSector(wireAddr, timeout);
                 if(res == null)
                 {
-                    addWarning("BK7252U: read " + formatHex(wireAddr) + " returned no data"
+                    addWarning("Read " + formatHex(wireAddr) + " returned no data"
                         + (attempt < retries ? ", retrying." : ".") + Environment.NewLine);
                     continue;
                 }
@@ -2113,13 +2064,16 @@ namespace BK7231Flasher
             {
                 commandEnd--;
             }
-            byte[] response = Start_Cmd(BuildCmd_CheckCRC(start, commandEnd), CalcRxLength_CheckCRC(), 5.0f);
+            float timeout = isModernFullProtocolChip() && endExclusive - start <= SECTOR_SIZE
+                ? MODERN_COMMAND_TIMEOUT : 5.0f;
+            byte[] response = Start_Cmd(BuildCmd_CheckCRC(start, commandEnd), CalcRxLength_CheckCRC(), timeout);
             if (response == null)
             {
                 return false;
             }
             byte[] expected = new byte[] { 0x04, 0x0e, 0x08, 0x01, 0xe0, 0xfc, (byte)CommandCode.CheckCRC };
-            if (expected.Length > response.Length || ByteArrayCompare(expected, response, expected.Length) == false)
+            if (response.Length < 11 || expected.Length > response.Length
+                || ByteArrayCompare(expected, response, expected.Length) == false)
             {
                 return false;
             }
@@ -2127,49 +2081,21 @@ namespace BK7231Flasher
             return true;
         }
 
-        bool verifyModernPageCRC(int address, byte[] page, out uint deviceCRC, out uint localCRC)
+        ModernPageCRCResult verifyModernPageCRC(int address, byte[] page, out uint deviceCRC, out uint localCRC)
         {
             localCRC = CRC.crc32_ver2(0xffffffff, page);
             if (tryGetDeviceCRC(address, address + SECTOR_SIZE, out deviceCRC) == false)
             {
-                return false;
+                return ModernPageCRCResult.TransportError;
             }
-            return deviceCRC == localCRC;
+            return deviceCRC == localCRC ? ModernPageCRCResult.Match : ModernPageCRCResult.Mismatch;
         }
 
-        byte[] readModernPageVerified(int address)
+        float getModernReadTimeout()
         {
-            byte[] lastPayload = null;
-            for (int attempt = 1; attempt <= MODERN_READ_ATTEMPTS; attempt++)
-            {
-                if (cancellationToken.IsCancellationRequested)
-                {
-                    return null;
-                }
-                byte[] response = readSector(address);
-                if (response == null || response.Length < READ_RESPONSE_HEADER_SIZE + SECTOR_SIZE)
-                {
-                    addWarning("Read page " + formatHex(address) + " failed on attempt " + attempt + "." + Environment.NewLine);
-                    continue;
-                }
-                byte[] payload = new byte[SECTOR_SIZE];
-                Array.Copy(response, READ_RESPONSE_HEADER_SIZE, payload, 0, SECTOR_SIZE);
-                lastPayload = payload;
-                if (verifyModernPageCRC(address, payload, out uint deviceCRC, out uint localCRC))
-                {
-                    return payload;
-                }
-                addWarning("Read page " + formatHex(address) + " CRC mismatch on attempt " + attempt
-                    + ": device " + formatHex(deviceCRC) + ", local " + formatHex(localCRC) + "."
-                    + Environment.NewLine);
-            }
-            if (bIgnoreCRCErr && lastPayload != null)
-            {
-                addWarning("IgnoreCRCErr is enabled; accepting the final unverified page at "
-                    + formatHex(address) + "." + Environment.NewLine);
-                return lastPayload;
-            }
-            return null;
+            int currentBaud = serial != null ? serial.BaudRate : baudrate;
+            float transferSeconds = (READ_RESPONSE_HEADER_SIZE + SECTOR_SIZE) * 10.0f / Math.Max(currentBaud, 1);
+            return Math.Max(MODERN_COMMAND_TIMEOUT, transferSeconds * 5.0f);
         }
 
         static byte[] copyPage(byte[] data, int offset)
@@ -2188,37 +2114,51 @@ namespace BK7231Flasher
         {
             byte[] page = copyPage(data, offset);
             bool erasedPage = pageIsErased(page);
+            bool eraseBeforeRetry = false;
+            bool writeBeforeVerification = erasedPage == false;
             for (int attempt = 1; attempt <= MODERN_WRITE_ATTEMPTS; attempt++)
             {
                 if (cancellationToken.IsCancellationRequested)
                 {
                     return false;
                 }
-                if (attempt > 1)
+                if (eraseBeforeRetry)
                 {
                     addWarning("Retrying page " + formatHex(address) + ": erasing its 4K sector again." + Environment.NewLine);
                     if (eraseSector(address, 0x20) == false)
                     {
                         continue;
                     }
+                    eraseBeforeRetry = false;
+                    writeBeforeVerification = erasedPage == false;
                 }
-                if (erasedPage == false && writeSector4K(address, page, 0) == false)
+                if (writeBeforeVerification && writeSector4K(address, page, 0) == false)
                 {
                     addWarning("Write page " + formatHex(address) + " failed on attempt " + attempt + "." + Environment.NewLine);
+                    eraseBeforeRetry = true;
                     continue;
                 }
-                if (verifyModernPageCRC(address, page, out uint deviceCRC, out uint localCRC))
+                writeBeforeVerification = false;
+                ModernPageCRCResult crcResult = verifyModernPageCRC(address, page, out uint deviceCRC, out uint localCRC);
+                if (crcResult == ModernPageCRCResult.Match)
                 {
                     return true;
+                }
+                if (crcResult == ModernPageCRCResult.TransportError)
+                {
+                    addWarning("Write page " + formatHex(address) + " CRC command failed on attempt " + attempt
+                        + "; retrying verification without erasing." + Environment.NewLine);
+                    continue;
                 }
                 addWarning("Write page " + formatHex(address) + " CRC mismatch on attempt " + attempt
                     + ": device " + formatHex(deviceCRC) + ", source " + formatHex(localCRC) + "."
                     + Environment.NewLine);
+                eraseBeforeRetry = true;
             }
             return false;
         }
 
-        MemoryStream readChunk(int startSector, int sectors, bool allowBlank = false)
+        MemoryStream readChunk(int startSector, int sectors, bool allowBlank = false, int modernRangeAttempt = 1)
         {
             logger.setState("Reading...", Color.Transparent);
             logger.setProgress(0, sectors);
@@ -2228,8 +2168,13 @@ namespace BK7231Flasher
                 addError("Read range is outside the detected flash size." + Environment.NewLine);
                 return null;
             }
+            if ((startSector % SECTOR_SIZE) != 0)
+            {
+                addError("Read range must start on a 4K boundary." + Environment.NewLine);
+                return null;
+            }
             int step = SECTOR_SIZE;
-            startSector = (int)(startSector & 0xfffff000);
+            bool modernProtocol = isModernFullProtocolChip();
             addLog("Going to start reading at offset " + formatHex(startSector) + "..." + Environment.NewLine);
             for (int i = 0; i < sectors; i++)
             {
@@ -2239,11 +2184,11 @@ namespace BK7231Flasher
                     ? formatHex(logicalAddr) + " -> " + formatHex(wireAddr) + "... "
                     : formatHex(logicalAddr) + "... ");
                 bool bOk;
-                if (isModernFullProtocolChip())
+                if (modernProtocol)
                 {
-                    byte[] payload = readModernPageVerified(wireAddr);
+                    byte[] payload = readSectorPayload(wireAddr, MODERN_READ_ATTEMPTS - 1, getModernReadTimeout());
                     bOk = payload != null;
-                    if (bOk)
+                    if(bOk)
                     {
                         tempResult.Write(payload, 0, payload.Length);
                     }
@@ -2271,18 +2216,12 @@ namespace BK7231Flasher
             }
             addLog(Environment.NewLine + "Read operation finished; verifying result..." + Environment.NewLine);
             byte[] result = tempResult.ToArray();
-            if (isModernFullProtocolChip() == false && allowBlank == false
+            if (modernProtocol == false && allowBlank == false
                 && checkAbnormal(startSector, sectors, result) == false)
             {
                 return null;
             }
-            if (isModernFullProtocolChip())
-            {
-                logger.setState("Reading success!", Color.Green);
-                addSuccess("All pages read and verified independently." + Environment.NewLine);
-                addLog("Loaded total " + formatHex(sectors * step) + " bytes " + Environment.NewLine);
-                return tempResult;
-            }
+            bool crcVerified = true;
             if (chipType == BKType.BK7252)
             {
                 if (checkBK7252ReadCRC(startSector, sectors, result) == false)
@@ -2290,12 +2229,32 @@ namespace BK7231Flasher
                     return null;
                 }
             }
-            else if (checkCRC(startSector, sectors, result) == false)
+            else
             {
-                return null;
+                bool finalModernAttempt = modernRangeAttempt >= MODERN_READ_RANGE_ATTEMPTS;
+                bool ignoreCRCError = modernProtocol ? finalModernAttempt && bIgnoreCRCErr : bIgnoreCRCErr;
+                bool crcAccepted = checkCRC(startSector, sectors, result, ignoreCRCError, out crcVerified);
+                if (modernProtocol && crcVerified == false && finalModernAttempt == false)
+                {
+                    addWarning("CRC verification failed; retrying the modern read range ("
+                        + (modernRangeAttempt + 1) + "/" + MODERN_READ_RANGE_ATTEMPTS + ")." + Environment.NewLine);
+                    return readChunk(startSector, sectors, allowBlank, modernRangeAttempt + 1);
+                }
+                if (crcAccepted == false)
+                {
+                    return null;
+                }
             }
-            logger.setState("Reading success!", Color.Green);
-            addSuccess("All read!" + Environment.NewLine);
+            if (modernProtocol && crcVerified == false)
+            {
+                logger.setState("Read contains unverified data.", Color.Yellow);
+                addWarning("Read completed, but IgnoreCRCErr accepted an unverified range." + Environment.NewLine);
+            }
+            else
+            {
+                logger.setState("Reading success!", Color.Green);
+                addSuccess("All read!" + Environment.NewLine);
+            }
             addLog("Loaded total " + formatHex(sectors * step) + " bytes " + Environment.NewLine);
             return tempResult;
         }
@@ -2330,24 +2289,43 @@ namespace BK7231Flasher
         }
         bool checkCRC(int startSector, int total, byte [] array)
         {
+            return checkCRC(startSector, total, array, bIgnoreCRCErr, out _);
+        }
+        bool checkCRC(int startSector, int total, byte [] array, bool ignoreCRCError, out bool verified)
+        {
+            verified = false;
             logger.setState("Doing CRC verification...", Color.Transparent);
             addLog("Starting CRC check for " + total + " sectors, starting at offset 0x" + startSector.ToString("X2") + Environment.NewLine);
             int last = startSector + total * SECTOR_SIZE;
-            uint bk_crc = calcCRC(startSector, last);
             uint our_crc = CRC.crc32_ver2(0xffffffff, array);
+            if (tryGetDeviceCRC(startSector, last, out uint bk_crc) == false)
+            {
+                logger.setState("CRC command failed!", Color.Red);
+                addError("Failed to read CRC from the chip." + Environment.NewLine);
+                if (ignoreCRCError)
+                {
+                    addWarning("IgnoreCRCErr checked, bin will be accepted without a device CRC." + Environment.NewLine);
+                    return true;
+                }
+                return false;
+            }
             if (bk_crc != our_crc)
             {
                 logger.setState("CRC mismatch!", Color.Red);
                 addError("CRC mismatch!" + Environment.NewLine);
                 addError("Send by BK " + formatHex(bk_crc) + ", our CRC " + formatHex(our_crc) + Environment.NewLine);
-                addError("Maybe you have wrong chip type set?" + Environment.NewLine);
-                addError("Did you set BK7231T but have in reality BK7231N or BK7231M?" + Environment.NewLine);
-                if (bIgnoreCRCErr) {
+                if (isModernFullProtocolChip() == false)
+                {
+                    addError("Maybe you have wrong chip type set?" + Environment.NewLine);
+                    addError("Did you set BK7231T but have in reality BK7231N or BK7231M?" + Environment.NewLine);
+                }
+                if (ignoreCRCError) {
                     addWarning("IgnoreCRCErr checked, bin will be saved even if there is a crc mismatch" + Environment.NewLine);
                     return true;
                 }
                 return false;
             }
+            verified = true;
             addSuccess("CRC matches " + formatHex(bk_crc) + "!" + Environment.NewLine);
             return true;
         }
@@ -2363,30 +2341,44 @@ namespace BK7231Flasher
                 + formatHex(startSector) + ".." + formatHex(logicalEnd)
                 + " -> wire " + formatHex(mappedStart) + ".." + formatHex(mappedEnd) + Environment.NewLine);
 
-            uint mapped_crc = calcCRC(mappedStart, mappedEnd);
-            if (mapped_crc == our_crc)
+            bool mappedCRCAvailable = tryGetDeviceCRC(mappedStart, mappedEnd, out uint mapped_crc);
+            if (mappedCRCAvailable && mapped_crc == our_crc)
             {
                 addSuccess("BK7252U: mapped CRC matches " + formatHex(mapped_crc) + "!" + Environment.NewLine);
                 return true;
             }
+            if (mappedCRCAvailable)
+            {
+                addWarning("BK7252U: mapped CRC " + formatHex(mapped_crc) + " did not match our CRC "
+                    + formatHex(our_crc) + "; trying logical CRC range." + Environment.NewLine);
+            }
+            else
+            {
+                addWarning("BK7252U: mapped CRC command failed; trying logical CRC range." + Environment.NewLine);
+            }
 
-            addWarning("BK7252U: mapped CRC " + formatHex(mapped_crc) + " did not match our CRC "
-                + formatHex(our_crc) + "; trying logical CRC range." + Environment.NewLine);
-
-            uint logical_crc = calcCRC(startSector, logicalEnd);
-            if (logical_crc == our_crc)
+            bool logicalCRCAvailable = tryGetDeviceCRC(startSector, logicalEnd, out uint logical_crc);
+            if (logicalCRCAvailable && logical_crc == our_crc)
             {
                 addSuccess("BK7252U: logical CRC matches " + formatHex(logical_crc) + "!" + Environment.NewLine);
                 return true;
             }
 
-            logger.setState("CRC mismatch!", Color.Red);
-            addError("BK7252U CRC mismatch!" + Environment.NewLine);
-            addError("Mapped CRC " + formatHex(mapped_crc) + ", logical CRC " + formatHex(logical_crc)
-                + ", our CRC " + formatHex(our_crc) + Environment.NewLine);
+            logger.setState("CRC verification failed!", Color.Red);
+            if (mappedCRCAvailable || logicalCRCAvailable)
+            {
+                addError("BK7252U CRC mismatch!" + Environment.NewLine);
+                addError("Mapped CRC " + (mappedCRCAvailable ? formatHex(mapped_crc) : "unavailable")
+                    + ", logical CRC " + (logicalCRCAvailable ? formatHex(logical_crc) : "unavailable")
+                    + ", our CRC " + formatHex(our_crc) + Environment.NewLine);
+            }
+            else
+            {
+                addError("BK7252U CRC commands failed for both mapped and logical ranges." + Environment.NewLine);
+            }
             if (bIgnoreCRCErr)
             {
-                addWarning("IgnoreCRCErr checked, bin will be saved even if there is a crc mismatch" + Environment.NewLine);
+                addWarning("IgnoreCRCErr checked, bin will be accepted despite the CRC failure." + Environment.NewLine);
                 return true;
             }
             return false;
@@ -2658,15 +2650,29 @@ namespace BK7231Flasher
         }
         int GetFlashMID()
         {
-            //addLog("Starting read sector for " + addr + Environment.NewLine);
             byte[] txbuf = BuildCmd_FlashGetMID(0x9f);
-            byte[] rxbuf = Start_Cmd(txbuf, CalcRxLength_FlashGetID());
-            if (rxbuf != null)
+            int attempts = isModernFullProtocolChip() ? MODERN_MID_ATTEMPTS : 1;
+            for (int attempt = 1; attempt <= attempts; attempt++)
             {
-                //addLog("Loaded " + rxbuf.Length + " bytes!" + Environment.NewLine);
-                return CheckRespond_FlashGetMID(rxbuf);
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    return 0;
+                }
+                byte[] rxbuf = Start_Cmd(txbuf, CalcRxLength_FlashGetID(), 0.1f);
+                if (rxbuf != null)
+                {
+                    int mid = CheckRespond_FlashGetMID(rxbuf);
+                    if (mid != 0)
+                    {
+                        return mid;
+                    }
+                }
+                if (attempt < attempts)
+                {
+                    addWarning("Flash MID read failed on attempt " + attempt + "; retrying." + Environment.NewLine);
+                    Thread.Sleep(MODERN_MID_RETRY_DELAY_MS);
+                }
             }
-            //addLog("Failed!" + Environment.NewLine);
             return 0;
         }
         bool WriteFlashReg(int addr, int val)
@@ -2814,10 +2820,6 @@ namespace BK7231Flasher
             //addLog("Failed!" + Environment.NewLine);
             return null;
         }
-        uint calcCRC(int start, int end)
-        {
-            return tryGetDeviceCRC(start, end, out uint crc) ? crc : 0;
-        }
         bool linkCheck()
         {
             byte[] txbuf = BuildCmd_LinkCheck();
@@ -2850,7 +2852,7 @@ namespace BK7231Flasher
             }
             byte[] txbuf = BuildCmd_EraseSector4K(addr, 0);
             byte[] rxbuf = Start_Cmd(txbuf, CalcRxLength_EraseSector4K(), 2.0f);
-            return rxbuf != null && CheckRespond_EraseSector4K(rxbuf, addr);
+            return rxbuf != null && CheckRespond_EraseSector4K(rxbuf);
         }
         bool eraseSector(int addr, int szcmd)
         {
@@ -2906,7 +2908,7 @@ namespace BK7231Flasher
 
             bool eraseUnit(int addr, int command, int pages, string unitName)
             {
-                for (int attempt = 1; attempt <= MODERN_ERASE_ATTEMPTS; attempt++)
+                for (int attempt = 1; attempt <= ERASE_ATTEMPTS; attempt++)
                 {
                     if (cancellationToken.IsCancellationRequested)
                     {
@@ -2921,7 +2923,7 @@ namespace BK7231Flasher
                         logger.setProgress(Math.Min(completed, sectors), sectors);
                         return true;
                     }
-                    addWarning(" failed (attempt " + attempt + "/" + MODERN_ERASE_ATTEMPTS + "). ");
+                    addWarning(" failed (attempt " + attempt + "/" + ERASE_ATTEMPTS + "). ");
                 }
                 logger.setState("Erase failed.", Color.Red);
                 addError(" Erasing " + unitName + " " + formatHex(addr) + " failed." + Environment.NewLine);
