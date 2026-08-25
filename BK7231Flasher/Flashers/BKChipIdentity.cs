@@ -18,6 +18,8 @@ namespace BK7231Flasher
 
         public string SecondaryId { get; }
 
+        public bool FriendlyNameFromSecondaryId { get; }
+
         public bool HasChipId => string.IsNullOrEmpty(NormalizedId) == false;
 
         public bool HasSecondaryId => string.IsNullOrEmpty(SecondaryId) == false;
@@ -25,7 +27,7 @@ namespace BK7231Flasher
         public bool IsKnown => string.Equals(FriendlyName, "unknown", StringComparison.OrdinalIgnoreCase) == false;
 
         public BKChipIdentityResult(int? registerAddress, byte[] rawBytes, string normalizedId, string friendlyName, BKType[] matchingTypes,
-            string secondaryId = null)
+            string secondaryId = null, bool friendlyNameFromSecondaryId = false)
         {
             RegisterAddress = registerAddress;
             RawBytes = rawBytes ?? Array.Empty<byte>();
@@ -33,6 +35,7 @@ namespace BK7231Flasher
             FriendlyName = string.IsNullOrWhiteSpace(friendlyName) ? "unknown" : friendlyName;
             MatchingTypes = matchingTypes ?? Array.Empty<BKType>();
             SecondaryId = secondaryId;
+            FriendlyNameFromSecondaryId = friendlyNameFromSecondaryId;
         }
 
         public bool MatchesSelected(BKType selectedType)
@@ -138,6 +141,7 @@ namespace BK7231Flasher
                 { "24c00030", new BKChipIdentityDefinition("BK7236N", BKType.BK7236) },
                 { "26140020", new BKChipIdentityDefinition("BK7236N", BKType.BK7236) },
                 { "25300020", new BKChipIdentityDefinition("BK7236Q", BKType.BK7236) },
+                { "20340b10", new BKChipIdentityDefinition("BK7236 / BK7258 family", BKType.BK7236, BKType.BK7258) },
             };
 
         public static bool ShouldAttemptRead(BKType selectedType)
@@ -178,12 +182,13 @@ namespace BK7231Flasher
             }
 
             BKChipIdentityDefinition definition;
-            if (Known7236SecondaryIds.TryGetValue(secondaryId, out definition) == false)
+            bool friendlyNameFromSecondaryId = Known7236SecondaryIds.TryGetValue(secondaryId, out definition);
+            if (friendlyNameFromSecondaryId == false)
             {
                 definition = new BKChipIdentityDefinition(primary.FriendlyName, primary.MatchingTypes);
             }
             return new BKChipIdentityResult(primary.RegisterAddress, primary.RawBytes, primary.NormalizedId,
-                definition.FriendlyName, definition.MatchingTypes, secondaryId);
+                definition.FriendlyName, definition.MatchingTypes, secondaryId, friendlyNameFromSecondaryId);
         }
 
         private static BKChipIdentityResult DetectForAddresses(IEnumerable<int> registerAddresses, Func<int, byte[]> readRegister)

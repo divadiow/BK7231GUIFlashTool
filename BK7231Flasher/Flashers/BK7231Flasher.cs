@@ -1300,10 +1300,12 @@ namespace BK7231Flasher
             }
             else
             {
-                addLog($"Chip ID: 0x{chipIdentity.NormalizedId} ({chipIdentity.FriendlyName})" + Environment.NewLine);
+                string primaryIdentitySuffix = chipIdentity.FriendlyNameFromSecondaryId ? "" : $" ({chipIdentity.FriendlyName})";
+                addLog($"Chip ID: 0x{chipIdentity.NormalizedId}{primaryIdentitySuffix}" + Environment.NewLine);
                 if (chipIdentity.HasSecondaryId)
                 {
-                    addLog($"Secondary chip ID: 0x{chipIdentity.SecondaryId.ToUpperInvariant()}" + Environment.NewLine);
+                    string secondaryIdentitySuffix = chipIdentity.FriendlyNameFromSecondaryId ? $" ({chipIdentity.FriendlyName})" : "";
+                    addLog($"Secondary chip ID: 0x{chipIdentity.SecondaryId.ToUpperInvariant()}{secondaryIdentitySuffix}" + Environment.NewLine);
                 }
                 string chipMismatchWarning = chipIdentity.BuildMismatchWarning(chipType);
                 if (string.IsNullOrEmpty(chipMismatchWarning) == false)
