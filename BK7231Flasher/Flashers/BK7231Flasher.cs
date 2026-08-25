@@ -1229,12 +1229,20 @@ namespace BK7231Flasher
             int maxAttempts = 10;
             for (int attempt = 1; attempt <= maxAttempts; attempt++)
             {
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    return false;
+                }
                 addSuccess("Going to set baud rate setting (" + baudrate + ")!" + Environment.NewLine);
                 logger.setState("Setting baud rate...", Color.Transparent);
                 if (setBaudRateIfNeeded())
                 {
                     Thread.Sleep(50);
                     return true;
+                }
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    return false;
                 }
                 addError("Failed to set baud rate!" + Environment.NewLine);
                 logger.setState("Failed to set baud rate!", Color.Red);
@@ -3083,10 +3091,10 @@ namespace BK7231Flasher
             //addLog("Failed!" + Environment.NewLine);
             return null;
         }
-        bool linkCheck()
+        bool linkCheck(float timeout = 0.001f)
         {
             byte[] txbuf = BuildCmd_LinkCheck();
-            byte[] rxbuf = Start_Cmd(txbuf, CalcRxLength_LinkCheck(), 0.001f);
+            byte[] rxbuf = Start_Cmd(txbuf, CalcRxLength_LinkCheck(), timeout);
             observeLinkStage(0x00, rxbuf);
             return rxbuf != null && CheckRespond_LinkCheck(rxbuf);
         }
@@ -3167,7 +3175,23 @@ namespace BK7231Flasher
                     return true;
                 }
             }
-            serial.BaudRate = prev;
+            addWarning("Set-baud acknowledgement was missing or invalid; checking target at " + baudrate + " baud." + Environment.NewLine);
+            for (int attempt = 0; attempt < 3; attempt++)
+            {
+                if (cancellationToken.IsCancellationRequested || serial == null || serial.IsOpen == false)
+                {
+                    return false;
+                }
+                if (linkCheck(0.05f))
+                {
+                    addSuccess("Link check confirmed communication at " + baudrate + " baud; continuing." + Environment.NewLine);
+                    return true;
+                }
+            }
+            if (serial != null && serial.IsOpen)
+            {
+                serial.BaudRate = prev;
+            }
             return false;
         }
 
