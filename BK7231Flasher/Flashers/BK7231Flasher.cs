@@ -45,7 +45,7 @@ namespace BK7231Flasher
         const float MODERN_COMMAND_TIMEOUT = 0.5f;
         const int SET_BAUD_DRAIN_TIMEOUT_MS = 1000;
         const int BEKEN_EFUSE_SIZE = 0x20;
-        const int BK7258_EFUSE_SIZE = 0x04;
+        const int FOUR_BYTE_BEKEN_EFUSE_SIZE = 0x04;
         const int SCTRL_EFUSE_CTRL = 0x00800074;
         const int SCTRL_EFUSE_OPTR = 0x00800078;
         const int BK7258_SYS_DEVICE_CLK_ENABLE = 0x54010030;
@@ -55,10 +55,11 @@ namespace BK7231Flasher
         const int BK7258_OTP_POWER_DOWN = 1 << 3;
         const int BK7258_EFUSE_CTRL = 0x54880010;
         const int BK7258_EFUSE_OPTR = 0x54880014;
-        const int BK7258_OTP1_DATA_BASE = 0x5B100400;
-        const int BK7258_OTP1_SIZE = 0x400;
-        const int BK7258_OTP2_DATA_BASE = 0x5B010000;
-        const int BK7258_OTP2_SIZE = 0xC00;
+        const int BK7239N_EFUSE_DATA_BASE = 0x5B10043C;
+        const int MODERN_BEKEN_OTP1_DATA_BASE = 0x5B100400;
+        const int MODERN_BEKEN_OTP1_SIZE = 0x400;
+        const int MODERN_BEKEN_OTP2_DATA_BASE = 0x5B010000;
+        const int MODERN_BEKEN_OTP2_SIZE = 0xC00;
         public static int SECTOR_SIZE = 0x1000;
         public static int BLOCK_SIZE = 0x10000;
         public static int SECTORS_PER_BLOCK = BLOCK_SIZE / SECTOR_SIZE;
@@ -1818,7 +1819,7 @@ namespace BK7231Flasher
                 case RomReadKind.Efuse:
                     return ReadBekenEfuse(offset, length);
                 case RomReadKind.Otp:
-                    return ReadBK7258Otp(offset, length);
+                    return ReadModernBekenOtp(offset, length);
                 default:
                     addError("Selected read target is not implemented." + Environment.NewLine);
                     return null;
@@ -1865,7 +1866,12 @@ namespace BK7231Flasher
 
         byte[] ReadBekenEfuse(int offset, int length)
         {
-            int efuseSize = chipType == BKType.BK7258 ? BK7258_EFUSE_SIZE : BEKEN_EFUSE_SIZE;
+            if (chipType == BKType.BK7239N)
+            {
+                return ReadModernBekenOtp(offset, length, true);
+            }
+            int efuseSize = chipType == BKType.BK7238 || chipType == BKType.BK7252N || chipType == BKType.BK7258
+                ? FOUR_BYTE_BEKEN_EFUSE_SIZE : BEKEN_EFUSE_SIZE;
             if (offset < 0 || length <= 0 || offset + length > efuseSize)
             {
                 throw new InvalidOperationException(chipType + " eFuse read range is out of bounds.");
@@ -1961,34 +1967,56 @@ namespace BK7231Flasher
             return (byte)(operationResult & 0xFF);
         }
 
-        byte[] ReadBK7258Otp(int offset, int length)
+        byte[] ReadModernBekenOtp(int offset, int length, bool readEfuseField = false)
         {
-            int expectedLength = BK7258_OTP1_SIZE + BK7258_OTP2_SIZE;
-            if (offset != 0 || length != expectedLength)
+            int expectedLength = MODERN_BEKEN_OTP1_SIZE + MODERN_BEKEN_OTP2_SIZE;
+            if (readEfuseField)
             {
-                throw new InvalidOperationException("BK7258 OTP read must include the complete OTP1 and OTP2 windows.");
-            }
-
-            logger.setState("Reading OTP...", Color.Transparent);
-            logger.setProgress(0, length);
-            addLog("Reading BK7258 OTP1 APB and OTP2 AHB windows, combined length " + formatHex(length) + Environment.NewLine);
-
-            int originalClock = ReadFlashRegRequiredInt(BK7258_SYS_DEVICE_CLK_ENABLE, "BK7258 SYS clock enable");
-            int originalPower = ReadFlashRegRequiredInt(BK7258_SYS_POWER_SLEEP_WAKEUP, "BK7258 SYS power control");
-            bool bClockChanged = (originalClock & BK7258_OTP_CLOCK_ENABLE) == 0;
-            bool bPowerChanged = (originalPower & BK7258_OTP_POWER_DOWN) != 0;
-
-            if (bClockChanged && WriteFlashReg(BK7258_SYS_DEVICE_CLK_ENABLE, originalClock | BK7258_OTP_CLOCK_ENABLE) == false)
-            {
-                throw new IOException("BK7258 OTP clock enable failed.");
-            }
-            if (bPowerChanged && WriteFlashReg(BK7258_SYS_POWER_SLEEP_WAKEUP, originalPower & ~BK7258_OTP_POWER_DOWN) == false)
-            {
-                if (bClockChanged)
+                if (chipType != BKType.BK7239N || offset != 0 || length != FOUR_BYTE_BEKEN_EFUSE_SIZE)
                 {
-                    WriteFlashReg(BK7258_SYS_DEVICE_CLK_ENABLE, originalClock);
+                    throw new InvalidOperationException(chipType + " eFuse read range is out of bounds.");
                 }
-                throw new IOException("BK7258 OTP power enable failed.");
+            }
+            else if ((chipType != BKType.BK7239N && chipType != BKType.BK7258) || offset != 0 || length != expectedLength)
+            {
+                throw new InvalidOperationException(chipType + " OTP read must include the complete OTP1 and OTP2 windows.");
+            }
+
+            string targetName = readEfuseField ? "eFuse" : "OTP";
+            logger.setState("Reading " + targetName + "...", Color.Transparent);
+            logger.setProgress(0, length);
+            if (readEfuseField)
+            {
+                addLog("Reading " + chipType + " OTP1 eFuse field from " + formatHex(BK7239N_EFUSE_DATA_BASE + offset)
+                    + ", length " + formatHex(length) + Environment.NewLine);
+            }
+            else
+            {
+                addLog("Reading " + chipType + " OTP1 APB and OTP2 AHB windows, combined length " + formatHex(length) + Environment.NewLine);
+            }
+
+            int originalClock = 0;
+            bool bClockChanged = false;
+            int originalPower = 0;
+            bool bPowerChanged = false;
+            if (chipType == BKType.BK7258)
+            {
+                originalClock = ReadFlashRegRequiredInt(BK7258_SYS_DEVICE_CLK_ENABLE, "BK7258 SYS clock enable");
+                originalPower = ReadFlashRegRequiredInt(BK7258_SYS_POWER_SLEEP_WAKEUP, "BK7258 SYS power control");
+                bClockChanged = (originalClock & BK7258_OTP_CLOCK_ENABLE) == 0;
+                bPowerChanged = (originalPower & BK7258_OTP_POWER_DOWN) != 0;
+                if (bClockChanged && WriteFlashReg(BK7258_SYS_DEVICE_CLK_ENABLE, originalClock | BK7258_OTP_CLOCK_ENABLE) == false)
+                {
+                    throw new IOException("BK7258 OTP clock enable failed.");
+                }
+                if (bPowerChanged && WriteFlashReg(BK7258_SYS_POWER_SLEEP_WAKEUP, originalPower & ~BK7258_OTP_POWER_DOWN) == false)
+                {
+                    if (bClockChanged)
+                    {
+                        WriteFlashReg(BK7258_SYS_DEVICE_CLK_ENABLE, originalClock);
+                    }
+                    throw new IOException("BK7258 OTP power enable failed.");
+                }
             }
 
             try
@@ -1999,21 +2027,23 @@ namespace BK7231Flasher
                 {
                     if (cancellationToken.IsCancellationRequested)
                     {
-                        logger.setState("OTP read cancelled.", Color.Yellow);
+                        logger.setState(targetName + " read cancelled.", Color.Yellow);
                         return null;
                     }
-                    int address = ofs < BK7258_OTP1_SIZE
-                        ? BK7258_OTP1_DATA_BASE + ofs
-                        : BK7258_OTP2_DATA_BASE + ofs - BK7258_OTP1_SIZE;
+                    int address = readEfuseField
+                        ? BK7239N_EFUSE_DATA_BASE + offset + ofs
+                        : ofs < MODERN_BEKEN_OTP1_SIZE
+                            ? MODERN_BEKEN_OTP1_DATA_BASE + ofs
+                            : MODERN_BEKEN_OTP2_DATA_BASE + ofs - MODERN_BEKEN_OTP1_SIZE;
                     byte[] word = ReadFlashReg(address);
                     if (word == null || word.Length < 4)
                     {
-                        throw new IOException("BK7258 OTP read failed at " + formatHex(address));
+                        throw new IOException(chipType + " " + targetName + " read failed at " + formatHex(address));
                     }
                     Buffer.BlockCopy(word, 0, result, ofs, 4);
                     logger.setProgress(ofs + 4, length);
                 }
-                logger.setState("OTP read success!", Color.Green);
+                logger.setState(targetName + " read success!", Color.Green);
                 return result;
             }
             finally

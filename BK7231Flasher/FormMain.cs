@@ -718,7 +718,7 @@ namespace BK7231Flasher
         {
             if (type == BKType.BK7239N)
             {
-                MessageBox.Show("BK7239N flash and ROM operations are supported, but an OpenBK7239N release build is not currently available.");
+                MessageBox.Show("BK7239N flash, ROM, OTP, and eFuse operations are supported, but an OpenBK7239N release build is not currently available.");
                 return;
             }
             FormDownloader fd = new FormDownloader(this, type);
