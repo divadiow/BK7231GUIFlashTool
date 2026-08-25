@@ -16,17 +16,29 @@ namespace BK7231Flasher
 
         public BKType[] MatchingTypes { get; }
 
+        public int? SecondaryRegisterAddress { get; }
+
+        public byte[] SecondaryRawBytes { get; }
+
+        public string SecondaryId { get; }
+
         public bool HasChipId => string.IsNullOrEmpty(NormalizedId) == false;
+
+        public bool HasSecondaryId => string.IsNullOrEmpty(SecondaryId) == false;
 
         public bool IsKnown => string.Equals(FriendlyName, "unknown", StringComparison.OrdinalIgnoreCase) == false;
 
-        public BKChipIdentityResult(int? registerAddress, byte[] rawBytes, string normalizedId, string friendlyName, BKType[] matchingTypes)
+        public BKChipIdentityResult(int? registerAddress, byte[] rawBytes, string normalizedId, string friendlyName, BKType[] matchingTypes,
+            int? secondaryRegisterAddress = null, byte[] secondaryRawBytes = null, string secondaryId = null)
         {
             RegisterAddress = registerAddress;
             RawBytes = rawBytes ?? Array.Empty<byte>();
             NormalizedId = normalizedId;
             FriendlyName = string.IsNullOrWhiteSpace(friendlyName) ? "unknown" : friendlyName;
             MatchingTypes = matchingTypes ?? Array.Empty<BKType>();
+            SecondaryRegisterAddress = secondaryRegisterAddress;
+            SecondaryRawBytes = secondaryRawBytes ?? Array.Empty<byte>();
+            SecondaryId = secondaryId;
         }
 
         public bool MatchesSelected(BKType selectedType)
@@ -97,7 +109,8 @@ namespace BK7231Flasher
     internal static class BKChipIdentity
     {
         private const int SctrlChipIdRegister = 0x800000;
-        private const int DeviceIdRegister = 0x44010004;
+        private const int SysVersionIdRegister = 0x44010004;
+        private const int AonRevisionIdRegister = 0x440001F0;
 
         // Only keep IDs here that we have evidence can come back from the newer ReadReg path.
         // Legacy BK7231T/BK7231U/BK7252 modes are intentionally left out because this tool
@@ -110,11 +123,29 @@ namespace BK7231Flasher
             new Dictionary<string, BKChipIdentityDefinition>(StringComparer.OrdinalIgnoreCase)
             {
                 { "7231c", new BKChipIdentityDefinition("BK7231N family", BKType.BK7231N, BKType.BK7231M) },
-                { "7236", new BKChipIdentityDefinition("BK7236 / BK7258 family", BKType.BK7236, BKType.BK7258) },
+                { "7236", new BKChipIdentityDefinition("BK7236 family", BKType.BK7236, BKType.BK7239N, BKType.BK7258) },
                 { "7238", new BKChipIdentityDefinition("BK7238", BKType.BK7238) },
                 { "7256", new BKChipIdentityDefinition("BK7256") },
                 { "7252a", new BKChipIdentityDefinition("BK7252N", BKType.BK7252N) },
                 { "7259", new BKChipIdentityDefinition("BK7259") },
+            };
+
+        // BK7236-family SYS_VERSION values are shared by several derivatives. These
+        // AON revision IDs are the derivative signatures used by BKFIL 4.1.4.
+        private static readonly Dictionary<string, BKChipIdentityDefinition> Known7236SecondaryIds =
+            new Dictionary<string, BKChipIdentityDefinition>(StringComparer.OrdinalIgnoreCase)
+            {
+                { "25750920", new BKChipIdentityDefinition("BK7239N", BKType.BK7239N) },
+                { "25750820", new BKChipIdentityDefinition("BK7239N", BKType.BK7239N) },
+                { "25730020", new BKChipIdentityDefinition("BK7239N", BKType.BK7239N) },
+                { "25750b20", new BKChipIdentityDefinition("BK7239N", BKType.BK7239N) },
+                { "24400030", new BKChipIdentityDefinition("BK7236N", BKType.BK7236) },
+                { "24c00020", new BKChipIdentityDefinition("BK7236N", BKType.BK7236) },
+                { "24c00030", new BKChipIdentityDefinition("BK7236N", BKType.BK7236) },
+                { "26140020", new BKChipIdentityDefinition("BK7236N", BKType.BK7236) },
+                { "25300020", new BKChipIdentityDefinition("BK7236Q", BKType.BK7236) },
+                { "20340b10", new BKChipIdentityDefinition("BK7236 family", BKType.BK7236, BKType.BK7239N, BKType.BK7258) },
+                { "23a40910", new BKChipIdentityDefinition("BK7236 family", BKType.BK7236, BKType.BK7239N, BKType.BK7258) },
             };
 
         public static bool ShouldAttemptRead(BKType selectedType)
@@ -137,7 +168,30 @@ namespace BK7231Flasher
                 return new BKChipIdentityResult(null, null, null, null, null);
             }
 
-            return DetectForAddresses(GetCandidateRegisterAddresses(selectedType), readRegister);
+            BKChipIdentityResult result = DetectForAddresses(GetCandidateRegisterAddresses(selectedType), readRegister);
+            if (string.Equals(result.NormalizedId, "7236", StringComparison.OrdinalIgnoreCase))
+            {
+                result = Refine7236Family(result, readRegister);
+            }
+            return result;
+        }
+
+        private static BKChipIdentityResult Refine7236Family(BKChipIdentityResult primary, Func<int, byte[]> readRegister)
+        {
+            byte[] rawBytes = readRegister(AonRevisionIdRegister);
+            string secondaryId = NormalizeUInt32(rawBytes);
+            if (string.IsNullOrEmpty(secondaryId))
+            {
+                return primary;
+            }
+
+            BKChipIdentityDefinition definition;
+            if (Known7236SecondaryIds.TryGetValue(secondaryId, out definition) == false)
+            {
+                definition = new BKChipIdentityDefinition(primary.FriendlyName, primary.MatchingTypes);
+            }
+            return new BKChipIdentityResult(primary.RegisterAddress, primary.RawBytes, primary.NormalizedId,
+                definition.FriendlyName, definition.MatchingTypes, AonRevisionIdRegister, rawBytes, secondaryId);
         }
 
         private static BKChipIdentityResult DetectForAddresses(IEnumerable<int> registerAddresses, Func<int, byte[]> readRegister)
@@ -189,15 +243,16 @@ namespace BK7231Flasher
             switch (selectedType)
             {
                 case BKType.BK7236:
+                case BKType.BK7239N:
                 case BKType.BK7258:
                     // All newer ReadReg-capable modes try both known chip-ID register locations.
                     // Probe order is biased toward the selected mode's expected primary register.
-                    yield return DeviceIdRegister;
+                    yield return SysVersionIdRegister;
                     yield return SctrlChipIdRegister;
                     break;
                 default:
                     yield return SctrlChipIdRegister;
-                    yield return DeviceIdRegister;
+                    yield return SysVersionIdRegister;
                     break;
             }
         }

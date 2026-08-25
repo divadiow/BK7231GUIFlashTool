@@ -937,6 +937,7 @@ namespace BK7231Flasher
                 case BKType.BK7231N:
                 case BKType.BK7236:
                 case BKType.BK7238:
+                case BKType.BK7239N:
                 case BKType.BK7252N:
                 case BKType.BK7258:
                     return true;
@@ -1252,6 +1253,10 @@ namespace BK7231Flasher
             else
             {
                 addLog($"Chip ID: 0x{chipIdentity.NormalizedId} ({chipIdentity.FriendlyName})" + Environment.NewLine);
+                if (chipIdentity.HasSecondaryId)
+                {
+                    addLog($"Secondary chip ID: 0x{chipIdentity.SecondaryId.ToUpperInvariant()}" + Environment.NewLine);
+                }
                 string chipMismatchWarning = chipIdentity.BuildMismatchWarning(chipType);
                 if (string.IsNullOrEmpty(chipMismatchWarning) == false)
                 {
@@ -1273,7 +1278,7 @@ namespace BK7231Flasher
                 {
                     return false;
                 }
-                if (chipType != BKType.BK7236 && chipType != BKType.BK7238
+                if (chipType != BKType.BK7236 && chipType != BKType.BK7238 && chipType != BKType.BK7239N
                     && chipType != BKType.BK7252N && chipType != BKType.BK7258)
                 {
                     addLog("Going to read encryption key..." + Environment.NewLine);
@@ -1512,6 +1517,18 @@ namespace BK7231Flasher
                 cfg = logger.getConfigToWrite();
             }
             int ofs = OBKFlashLayout.getConfigLocation(chipType, out var sectors);
+            if (cfg != null && (sectors <= 0 || ofs < 0))
+            {
+                if (rwMode == WriteMode.OnlyOBKConfig)
+                {
+                    logger.setState("OBK config unsupported.", Color.Red);
+                    addError("OBK config location is not defined for " + chipType + "." + Environment.NewLine);
+                    return false;
+                }
+                addWarning("Automatic OBK config injection is not supported on " + chipType
+                    + "; continuing without it." + Environment.NewLine);
+                cfg = null;
+            }
             logger.setState("Writing...", Color.Transparent);
             if (data != null)
             {
@@ -1771,7 +1788,7 @@ namespace BK7231Flasher
                 Buffer.BlockCopy(word, 0, result, ofs, 4);
                 logger.setProgress(ofs + 4, length);
             }
-            if ((chipType == BKType.BK7236 || chipType == BKType.BK7258)
+            if ((chipType == BKType.BK7236 || chipType == BKType.BK7239N || chipType == BKType.BK7258)
                 && (result.All(value => value == 0) || result.All(value => value == 0xFF)))
             {
                 throw new IOException(chipType + " ROM read from " + formatHex(offset) + " returned only blank bytes.");

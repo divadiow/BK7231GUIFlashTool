@@ -422,6 +422,7 @@ namespace BK7231Flasher
                 case BKType.BK7231U:
                 case BKType.BK7236:
                 case BKType.BK7238:
+                case BKType.BK7239N:
                 case BKType.BK7252:
                 case BKType.BK7252N:
                 case BKType.BK7258:

@@ -198,6 +198,7 @@ namespace BK7231Flasher
             new RomReadTarget(BKType.BK7231N, RomReadKind.Efuse, "eFuse", 0x00000000, 0x20, 115200, CommonSerialBauds, BekenEfuseSpace, BekenEfuseBackend, BekenSctrlEfuseController),
             // BK7236 production Boot ROM maps to 0x061F0000; its non-secure alias is untested on hardware.
             new RomReadTarget(BKType.BK7236, RomReadKind.Rom, "ROM", 0x161F0000, 0x10000, 115200, CommonSerialBauds, BekenNonSecureRomSpace, BekenRomBackend, BekenRomController),
+            new RomReadTarget(BKType.BK7239N, RomReadKind.Rom, "ROM", 0x16000000, 0x10000, 115200, CommonSerialBauds, BekenNonSecureRomSpace, BekenRomBackend, BekenRomController),
             new RomReadTarget(BKType.BK7238, RomReadKind.Rom, "ROM", 0x00000000, 0x4000, 115200, CommonSerialBauds, BekenRomSpace, BekenRomBackend, BekenRomController),
             new RomReadTarget(BKType.BK7238, RomReadKind.Efuse, "eFuse", 0x00000000, 0x20, 115200, CommonSerialBauds, BekenEfuseSpace, BekenEfuseBackend, BekenSctrlEfuseController),
             new RomReadTarget(BKType.BK7252N, RomReadKind.Rom, "ROM", 0x00000000, 0x4000, 115200, CommonSerialBauds, BekenRomSpace, BekenRomBackend, BekenRomController),
