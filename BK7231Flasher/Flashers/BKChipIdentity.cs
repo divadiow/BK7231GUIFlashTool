@@ -16,10 +16,6 @@ namespace BK7231Flasher
 
         public BKType[] MatchingTypes { get; }
 
-        public int? SecondaryRegisterAddress { get; }
-
-        public byte[] SecondaryRawBytes { get; }
-
         public string SecondaryId { get; }
 
         public bool HasChipId => string.IsNullOrEmpty(NormalizedId) == false;
@@ -29,15 +25,13 @@ namespace BK7231Flasher
         public bool IsKnown => string.Equals(FriendlyName, "unknown", StringComparison.OrdinalIgnoreCase) == false;
 
         public BKChipIdentityResult(int? registerAddress, byte[] rawBytes, string normalizedId, string friendlyName, BKType[] matchingTypes,
-            int? secondaryRegisterAddress = null, byte[] secondaryRawBytes = null, string secondaryId = null)
+            string secondaryId = null)
         {
             RegisterAddress = registerAddress;
             RawBytes = rawBytes ?? Array.Empty<byte>();
             NormalizedId = normalizedId;
             FriendlyName = string.IsNullOrWhiteSpace(friendlyName) ? "unknown" : friendlyName;
             MatchingTypes = matchingTypes ?? Array.Empty<BKType>();
-            SecondaryRegisterAddress = secondaryRegisterAddress;
-            SecondaryRawBytes = secondaryRawBytes ?? Array.Empty<byte>();
             SecondaryId = secondaryId;
         }
 
@@ -130,8 +124,8 @@ namespace BK7231Flasher
                 { "7259", new BKChipIdentityDefinition("BK7259") },
             };
 
-        // BK7236-family SYS_VERSION values are shared by several derivatives. These
-        // AON revision IDs are the derivative signatures used by BKFIL 4.1.4.
+        // BK7236-family SYS_VERSION values are shared by several derivatives.
+        // Known AON revision IDs refine the platform match where possible.
         private static readonly Dictionary<string, BKChipIdentityDefinition> Known7236SecondaryIds =
             new Dictionary<string, BKChipIdentityDefinition>(StringComparer.OrdinalIgnoreCase)
             {
@@ -144,8 +138,6 @@ namespace BK7231Flasher
                 { "24c00030", new BKChipIdentityDefinition("BK7236N", BKType.BK7236) },
                 { "26140020", new BKChipIdentityDefinition("BK7236N", BKType.BK7236) },
                 { "25300020", new BKChipIdentityDefinition("BK7236Q", BKType.BK7236) },
-                { "20340b10", new BKChipIdentityDefinition("BK7236 family", BKType.BK7236, BKType.BK7239N, BKType.BK7258) },
-                { "23a40910", new BKChipIdentityDefinition("BK7236 family", BKType.BK7236, BKType.BK7239N, BKType.BK7258) },
             };
 
         public static bool ShouldAttemptRead(BKType selectedType)
@@ -191,7 +183,7 @@ namespace BK7231Flasher
                 definition = new BKChipIdentityDefinition(primary.FriendlyName, primary.MatchingTypes);
             }
             return new BKChipIdentityResult(primary.RegisterAddress, primary.RawBytes, primary.NormalizedId,
-                definition.FriendlyName, definition.MatchingTypes, AonRevisionIdRegister, rawBytes, secondaryId);
+                definition.FriendlyName, definition.MatchingTypes, secondaryId);
         }
 
         private static BKChipIdentityResult DetectForAddresses(IEnumerable<int> registerAddresses, Func<int, byte[]> readRegister)
@@ -289,7 +281,7 @@ namespace BK7231Flasher
         {
             List<string> results = new List<string>();
             // Expected examples from the existing flasher logic:
-            // 0x7238 -> BK7238, 0x7231c -> BK7231N, 0x7236 -> BK7236/BK7258 family.
+            // 0x7238 -> BK7238, 0x7231c -> BK7231N, 0x7236 -> BK7236 family.
             AddCandidate(results, NormalizePreferred(rawBytes));
             AddCandidate(results, NormalizeLegacy(rawBytes));
             AddCandidate(results, NormalizeUInt32(rawBytes));

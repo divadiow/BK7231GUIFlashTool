@@ -986,7 +986,7 @@ namespace BK7231Flasher
 
         void observeLinkStage(byte requestCommand, byte[] response)
         {
-            if (isModernFullProtocolChip() == false || observedLinkStage != BekenLinkStage.Unknown)
+            if (isModernFullProtocolChip() == false)
             {
                 return;
             }
@@ -994,10 +994,15 @@ namespace BK7231Flasher
             {
                 return;
             }
+            if (observedLinkStage == stage)
+            {
+                return;
+            }
             observedLinkStage = stage;
+            string stageName = stage == BekenLinkStage.BootRom ? "BootROM" : "BL2";
             addLog("Link-stage probe command 0x" + requestCommand.ToString("X2")
                 + " returned 0x" + response[6].ToString("X2") + "." + Environment.NewLine);
-            addSuccess("Detected link stage: " + stage + Environment.NewLine);
+            addSuccess("Detected link stage: " + stageName + Environment.NewLine);
             if (stage == BekenLinkStage.Bl2)
             {
                 addWarning("The target is currently answering as BL2; this flasher operation requires the BootROM command endpoint."
@@ -2793,7 +2798,7 @@ namespace BK7231Flasher
                 addLog("Backup complete, keeping current flasher session for write phase." + Environment.NewLine);
                 if(checkExistingSessionAliveBeforeWrite() == false)
                 {
-                    if(chipType == BKType.BK7252 && rwMode == WriteMode.ReadAndWrite)
+                    if(chipType == BKType.BK7252)
                     {
                         addError("BK7252U: flasher session is not responding after backup; aborting before erase/write." + Environment.NewLine);
                         return false;
@@ -3122,8 +3127,15 @@ namespace BK7231Flasher
                 return false;
             }
             byte[] txbuf = BuildCmd_EraseSector4K(addr, 0);
-            byte[] rxbuf = Start_Cmd(txbuf, CalcRxLength_EraseSector4K(), 2.0f);
-            return rxbuf != null && CheckRespond_EraseSector4K(rxbuf);
+            byte[] rxbuf = Start_Cmd(txbuf, CalcRxLength_EraseSector4K(), 1.0f);
+            if (rxbuf != null)
+            {
+                if (CheckRespond_EraseSector4K(rxbuf))
+                {
+                    return true;
+                }
+            }
+            return false;
         }
         bool eraseSector(int addr, int szcmd)
         {
