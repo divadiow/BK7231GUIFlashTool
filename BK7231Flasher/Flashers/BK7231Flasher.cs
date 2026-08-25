@@ -2446,10 +2446,10 @@ namespace BK7231Flasher
             {
                 return null;
             }
-            bool crcVerified = true;
+            bool crcVerified;
             if (chipType == BKType.BK7252)
             {
-                if (checkBK7252ReadCRC(startSector, sectors, result) == false)
+                if (checkBK7252ReadCRC(startSector, sectors, result, out crcVerified) == false)
                 {
                     return null;
                 }
@@ -2490,7 +2490,7 @@ namespace BK7231Flasher
                     return null;
                 }
             }
-            if (modernProtocol && crcVerified == false)
+            if (crcVerified == false)
             {
                 logger.setState("Read contains unverified data.", Color.Yellow);
                 addWarning("Read completed, but IgnoreCRCErr accepted an unverified range." + Environment.NewLine);
@@ -2599,8 +2599,9 @@ namespace BK7231Flasher
             }
             return true;
         }
-        bool checkBK7252ReadCRC(int startSector, int total, byte[] array)
+        bool checkBK7252ReadCRC(int startSector, int total, byte[] array, out bool crcVerified)
         {
+            crcVerified = false;
             logger.setState("Doing CRC verification...", Color.Transparent);
             int logicalEnd = startSector + total * SECTOR_SIZE;
             int mappedStart = translateReadAddressForChip(startSector);
@@ -2614,6 +2615,7 @@ namespace BK7231Flasher
             bool mappedCRCAvailable = tryGetDeviceCRC(mappedStart, mappedEnd, out uint mapped_crc);
             if (mappedCRCAvailable && mapped_crc == our_crc)
             {
+                crcVerified = true;
                 addSuccess("BK7252U: mapped CRC matches " + formatHex(mapped_crc) + "!" + Environment.NewLine);
                 return true;
             }
@@ -2630,6 +2632,7 @@ namespace BK7231Flasher
             bool logicalCRCAvailable = tryGetDeviceCRC(startSector, logicalEnd, out uint logical_crc);
             if (logicalCRCAvailable && logical_crc == our_crc)
             {
+                crcVerified = true;
                 addSuccess("BK7252U: logical CRC matches " + formatHex(logical_crc) + "!" + Environment.NewLine);
                 return true;
             }
