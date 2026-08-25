@@ -43,6 +43,7 @@ namespace BK7231Flasher
         const int MODERN_MID_RETRY_DELAY_MS = 200;
         const int ERASE_ATTEMPTS = 5;
         const float MODERN_COMMAND_TIMEOUT = 0.5f;
+        const int SET_BAUD_DRAIN_TIMEOUT_MS = 1000;
         const int BEKEN_EFUSE_SIZE = 0x20;
         const int BK7258_EFUSE_SIZE = 0x04;
         const int SCTRL_EFUSE_CTRL = 0x00800074;
@@ -68,7 +69,10 @@ namespace BK7231Flasher
         public static string EMPTY_ENCRYPTION_KEY = "00000000 00000000 00000000 00000000";
         int bk7252ReadAddressBase = DEFAULT_FLASH_SIZE;
         BekenLinkStage observedLinkStage = BekenLinkStage.Unknown;
+        readonly object modificationSessionLock = new object();
         bool modernModificationSessionActive;
+        bool closePortDeferredForProtectionRestore;
+        int? originalFlashProtectionBits;
         public bool LastOperationSucceeded { get; private set; }
         bool openPort()
         {
@@ -115,6 +119,14 @@ namespace BK7231Flasher
         }
         public override void closePort()
         {
+            lock (modificationSessionLock)
+            {
+                if (modernModificationSessionActive)
+                {
+                    closePortDeferredForProtectionRestore = true;
+                    return;
+                }
+            }
             if (serial != null)
             {
                 serial.Close();
@@ -1078,9 +1090,26 @@ namespace BK7231Flasher
             }
             finally
             {
-                if (restoreFlashProtection() == false)
+                try
                 {
-                    LastOperationSucceeded = false;
+                    if (restoreFlashProtection() == false)
+                    {
+                        LastOperationSucceeded = false;
+                    }
+                }
+                finally
+                {
+                    bool closeDeferredPort;
+                    lock (modificationSessionLock)
+                    {
+                        modernModificationSessionActive = false;
+                        closeDeferredPort = closePortDeferredForProtectionRestore;
+                        closePortDeferredForProtectionRestore = false;
+                    }
+                    if (closeDeferredPort)
+                    {
+                        closePort();
+                    }
                 }
             }
             return LastOperationSucceeded;
@@ -1133,6 +1162,7 @@ namespace BK7231Flasher
         }
         public override void doRead(int startSector = 0x000, int sectors = 10, bool fullRead = false)
         {
+            ms = null;
             try
             {
                 doReadInternal(startSector, sectors, fullRead);
@@ -1221,7 +1251,12 @@ namespace BK7231Flasher
             resetLegacyFlashSize();
             deviceMID = 0;
             flashInfo = null;
-            modernModificationSessionActive = false;
+            lock (modificationSessionLock)
+            {
+                modernModificationSessionActive = false;
+                closePortDeferredForProtectionRestore = false;
+            }
+            originalFlashProtectionBits = null;
             addLog("Now is: " + DateTime.Now.ToLongDateString() + " " + DateTime.Now.ToLongTimeString() + "." + Environment.NewLine);
             addLog("Flasher mode: " + chipType + Environment.NewLine);
             addLog("Going to open port: " + serialName + "." + Environment.NewLine);
@@ -1396,13 +1431,34 @@ namespace BK7231Flasher
             {
                 return false;
             }
+            bool captureOriginalProtection;
+            lock (modificationSessionLock)
+            {
+                captureOriginalProtection = modernModificationSessionActive == false;
+            }
+            if (captureOriginalProtection)
+            {
+                if (tryReadFlashStatus(out int originalStatus) == false)
+                {
+                    addError("Unable to capture flash protection before modification." + Environment.NewLine);
+                    return false;
+                }
+                lock (modificationSessionLock)
+                {
+                    originalFlashProtectionBits = originalStatus & flashInfo.cwMsk;
+                    modernModificationSessionActive = true;
+                }
+                addLog("Original flash protection bits: "
+                    + formatHex(originalFlashProtectionBits.Value) + Environment.NewLine);
+            }
             addLog("Clearing flash protection before modification..." + Environment.NewLine);
-            modernModificationSessionActive = true;
-            if (setProtectState(true) == false)
+            int unprotectedBits = BKFlashList.BFD(flashInfo.cwUnp, flashInfo.sb, flashInfo.lb);
+            if (setProtectionBits(unprotectedBits) == false)
             {
                 addError("Unable to clear flash protection; erase/write has been aborted." + Environment.NewLine);
                 return false;
             }
+            addSuccess("Flash protection cleared." + Environment.NewLine);
             return true;
         }
 
@@ -1412,20 +1468,22 @@ namespace BK7231Flasher
             {
                 return true;
             }
-            modernModificationSessionActive = false;
             try
             {
-                if (flashInfo == null || serial == null || serial.IsOpen == false)
+                if (flashInfo == null || originalFlashProtectionBits.HasValue == false
+                    || serial == null || serial.IsOpen == false)
                 {
                     addError("Could not restore flash protection because the active flash session is unavailable." + Environment.NewLine);
                     return false;
                 }
-                addLog("Restoring flash protection..." + Environment.NewLine);
+                int protectionBits = originalFlashProtectionBits.Value;
+                addLog("Restoring original flash protection bits " + formatHex(protectionBits) + "..." + Environment.NewLine);
                 for (int attempt = 1; attempt <= 2; attempt++)
                 {
-                    if (setProtectState(false))
+                    if (setProtectionBits(protectionBits))
                     {
-                        addSuccess("Flash protection restored." + Environment.NewLine);
+                        originalFlashProtectionBits = null;
+                        addSuccess("Original flash protection restored." + Environment.NewLine);
                         return true;
                     }
                     if (attempt < 2)
@@ -1443,67 +1501,60 @@ namespace BK7231Flasher
             addError("Flash modification completed, but protection could not be restored." + Environment.NewLine);
             return false;
         }
-        bool setProtectState(bool unprotect)
+
+        bool tryReadFlashStatus(out int status)
         {
-            addSuccess("Entering SetProtectState(" + unprotect + ")..." + Environment.NewLine);
-            int cw = unprotect ? flashInfo.cwUnp : flashInfo.cwEnp;
+            status = 0;
+            for (int i = 0; i < flashInfo.szSR; i++)
+            {
+                byte[] srBytes = ReadFlashSR(flashInfo.cwdRd[i]);
+                if (srBytes == null || srBytes.Length < 2)
+                {
+                    return false;
+                }
+                status |= srBytes[1] << (8 * i);
+            }
+            return true;
+        }
+
+        bool setProtectionBits(int protectionBits)
+        {
+            int targetBits = protectionBits & flashInfo.cwMsk;
             int maxTries = 10;
             int tryNum = 0;
             while (true)
             {
                 tryNum++;
-                int sr = 0;
-
-                // read sr register
-                for (int i = 0; i < flashInfo.szSR; i++)
+                if (tryReadFlashStatus(out int status) == false)
                 {
-                    // value is second, sr size will be [2]
-                    byte [] srBytes = ReadFlashSR(flashInfo.cwdRd[i]);
-                    if (srBytes != null)
+                    if (tryNum >= maxTries)
                     {
-                        sr |= srBytes[1] << (8 * i);
-                        if (true)
-                        {
-                            addLog("sr: " + sr.ToString("x") + Environment.NewLine);
-                        }
-                    }
-                    else
-                    {
-                        addError("SetProtectState(" + unprotect + ") failed because ReadFlashSR failed!" + Environment.NewLine);
+                        addError("Flash protection update failed because the status register could not be read after "
+                            + maxTries + " retries." + Environment.NewLine);
                         return false;
                     }
+                    addWarning("Flash status read failed; retrying protection update." + Environment.NewLine);
+                    Thread.Sleep(10);
+                    continue;
                 }
-
-                if (true)
+                addLog("Flash status: " + formatHex(status) + ", target protection bits: "
+                    + formatHex(targetBits) + Environment.NewLine);
+                if ((status & flashInfo.cwMsk) == targetBits)
                 {
-                    addLog("final sr: " + sr.ToString("x") + Environment.NewLine);
-                    addLog("msk: " + flashInfo.cwMsk.ToString("x") + Environment.NewLine);
-                    addLog("cw: " + cw.ToString("x") + ", sb: " + flashInfo.sb + ", lb: " + flashInfo.lb + Environment.NewLine);
-                    addLog("bfd: " + BKFlashList.BFD(cw, flashInfo.sb, flashInfo.lb).ToString("x") + Environment.NewLine);
-                }
-
-                // if (un)protect word is set
-                if ((sr & flashInfo.cwMsk) == BKFlashList.BFD(cw, flashInfo.sb, flashInfo.lb))
-                {
-                    break;
+                    return true;
                 }
                 if(tryNum >= maxTries)
                 {
-                    addError("SetProtectState(" + unprotect + ") failed after " + maxTries+ " retries!" + Environment.NewLine);
+                    addError("Flash protection update failed after " + maxTries + " retries." + Environment.NewLine);
                     return false;
                 }
-                // set (un)protect word
-                int srt = (int)(sr & (flashInfo.cwMsk ^ 0xffffffff));
-                srt |= BKFlashList.BFD(cw, flashInfo.sb, flashInfo.lb);
-                if (WriteFlashSR(flashInfo.szSR, flashInfo.cwdWr[0], srt & 0xffff) == false)
+                int updatedStatus = (status & ~flashInfo.cwMsk) | targetBits;
+                if (WriteFlashSR(flashInfo.szSR, flashInfo.cwdWr[0], updatedStatus & 0xffff) == false)
                 {
-                    addWarning("SetProtectState(" + unprotect + ") write failed; retrying." + Environment.NewLine);
+                    addWarning("Flash protection write failed; retrying." + Environment.NewLine);
                 }
-
-                System.Threading.Thread.Sleep(10);
+                Thread.Sleep(10);
             }
-            addSuccess("SetProtectState(" + unprotect + ") success!" + Environment.NewLine);
-            return true;
         }
         bool writeChunk(int startSector, byte [] data, WriteMode rwMode)
         {
@@ -2589,17 +2640,16 @@ namespace BK7231Flasher
             }
             return false;
         }
-        bool checkBK7252USessionAliveBeforeWrite()
+        bool checkExistingSessionAliveBeforeWrite()
         {
-            int logicalAddr = BOOTLOADER_SIZE;
+            int logicalAddr = chipType == BKType.BK7252 ? BOOTLOADER_SIZE : 0;
             int wireAddr = translateReadAddressForChip(logicalAddr);
-            addLog("BK7252U: checking existing flasher session before write at logical "
+            addLog("Checking existing flasher session before write at logical "
                 + formatHex(logicalAddr) + " -> wire " + formatHex(wireAddr) + "... ");
             byte[] payload = readSectorPayload(wireAddr, 1, 2);
             if(payload == null)
             {
-                addError("failed." + Environment.NewLine);
-                addError("BK7252U: flasher session is not responding after backup; aborting before erase/write." + Environment.NewLine);
+                addWarning("failed." + Environment.NewLine);
                 return false;
             }
             addSuccess("OK." + Environment.NewLine);
@@ -2620,6 +2670,10 @@ namespace BK7231Flasher
 
         bool doReadAndWriteInternal(int startSector, int sectors, string sourceFileName, WriteMode rwMode)
         {
+            if (rwMode == WriteMode.ReadAndWrite)
+            {
+                ms = null;
+            }
             logger.setProgress(0, sectors);
             if (rwMode == WriteMode.OnlyWrite)
             {
@@ -2716,25 +2770,28 @@ namespace BK7231Flasher
                     addWarning("... so bootloader will not be overwritten!" + Environment.NewLine);
                 }
             }
-            if(chipType == BKType.BK7252 && rwMode == WriteMode.ReadAndWrite)
+            bool legacyBackupNeedsSessionReset = rwMode == WriteMode.ReadAndWrite
+                && isModernFullProtocolChip() == false && chipType != BKType.BK7252;
+            if (legacyBackupNeedsSessionReset)
             {
-                addLog("BK7252U: backup complete, keeping current flasher session for write phase." + Environment.NewLine);
-                if(checkBK7252USessionAliveBeforeWrite() == false)
-                {
-                    return false;
-                }
-            }
-            else
-            {
-                addLog("Preparing to write data file to chip - resetting bus and baud..." + Environment.NewLine);
-                // it must be redone
+                addLog("Preparing to write data file to chip - resetting legacy bus and baud..." + Environment.NewLine);
                 if (doGetBusAndSetBaudRate() == false)
                 {
                     return false;
                 }
-                if(chipType == BKType.BK7252)
+            }
+            else if (rwMode == WriteMode.ReadAndWrite)
+            {
+                addLog("Backup complete, keeping current flasher session for write phase." + Environment.NewLine);
+                if(checkExistingSessionAliveBeforeWrite() == false)
                 {
-                    detectBK7252UFlashSize();
+                    if(chipType == BKType.BK7252 && rwMode == WriteMode.ReadAndWrite)
+                    {
+                        addError("BK7252U: flasher session is not responding after backup; aborting before erase/write." + Environment.NewLine);
+                        return false;
+                    }
+                    addError("Flasher session is not responding after backup; aborting before erase/write." + Environment.NewLine);
+                    return false;
                 }
             }
             if (isModernFullProtocolChip() && prepareFlashForModification() == false)
@@ -2746,7 +2803,7 @@ namespace BK7231Flasher
                 addError("Writing file data to chip failed." + Environment.NewLine);
                 return false;
             }
-            if(chipType == BKType.BK7238 && ms != null)
+            if(rwMode == WriteMode.ReadAndWrite && chipType == BKType.BK7238 && ms != null)
             {
                 var rData = ms.ToArray();
                 RFPartitionUtil.getMACFromQio(rData, chipType, out var isNeedFix);
@@ -3075,9 +3132,29 @@ namespace BK7231Flasher
         {
             byte[] txbuf = BuildCmd_SetBaudRate(baudrate, delay_ms);
             Start_Cmd(txbuf,0, 0.5f);
-            while (serial.BytesToWrite > 0)
+            Stopwatch drainTimer = Stopwatch.StartNew();
+            while (true)
             {
-
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    addWarning("Baud rate change cancelled while waiting for serial output." + Environment.NewLine);
+                    return false;
+                }
+                if (serial == null || serial.IsOpen == false)
+                {
+                    addError("Serial port closed while changing baud rate." + Environment.NewLine);
+                    return false;
+                }
+                if (serial.BytesToWrite <= 0)
+                {
+                    break;
+                }
+                if (drainTimer.ElapsedMilliseconds >= SET_BAUD_DRAIN_TIMEOUT_MS)
+                {
+                    addError("Timed out waiting for serial output before changing baud rate." + Environment.NewLine);
+                    return false;
+                }
+                Thread.Sleep(1);
             }
             Thread.Sleep(delay_ms/2);
             int prev = serial.BaudRate;
