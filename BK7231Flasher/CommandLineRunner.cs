@@ -539,11 +539,12 @@ namespace BK7231Flasher
                 testPattern[i] = (byte)(i % 256);
             }
 
-            string tempFile = Path.Combine(Path.GetTempPath(), "bt_test_pattern.bin");
-            File.WriteAllBytes(tempFile, testPattern);
+            string tempFile = Path.Combine(Path.GetTempPath(),
+                "bt_test_pattern_" + Guid.NewGuid().ToString("N") + ".bin");
 
             try
             {
+                File.WriteAllBytes(tempFile, testPattern);
                 int startSector = ToStartSector(chipType, ofs);
                 int sectors = len / BK7231Flasher.SECTOR_SIZE;
 
@@ -567,10 +568,15 @@ namespace BK7231Flasher
                     return 1;
                 }
 
-                int compareLen = Math.Min(testPattern.Length, readData.Length);
+                if (testPattern.Length != readData.Length)
+                {
+                    Console.Error.WriteLine($"FAIL: Verification length differs (pattern={testPattern.Length}, read={readData.Length}).");
+                    return 1;
+                }
+
                 bool match = true;
                 int mismatchCount = 0;
-                for (int i = 0; i < compareLen; i++)
+                for (int i = 0; i < testPattern.Length; i++)
                 {
                     if (testPattern[i] != readData[i])
                     {
@@ -585,11 +591,6 @@ namespace BK7231Flasher
                 {
                     Console.Error.WriteLine($"FAIL: Verification failed with {mismatchCount} mismatched byte(s).");
                     return 1;
-                }
-
-                if (testPattern.Length != readData.Length)
-                {
-                    Console.WriteLine($"WARNING: Data matches but lengths differ (pattern={testPattern.Length}, read={readData.Length}).");
                 }
 
                 Console.WriteLine("SUCCESS: Verification passed! Read data matches written pattern.");
