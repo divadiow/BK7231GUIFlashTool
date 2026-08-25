@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
@@ -17,7 +18,7 @@ namespace BK7231Flasher
             Bl2,
         }
 
-        enum ModernPageCRCResult
+        enum CRCVerificationResult
         {
             Match,
             Mismatch,
@@ -36,6 +37,7 @@ namespace BK7231Flasher
         const int BK7252_READ_ATTEMPTS = 20;
         const int MODERN_READ_ATTEMPTS = 20;
         const int MODERN_READ_RANGE_ATTEMPTS = 2;
+        const int MODERN_RANGE_CRC_ATTEMPTS = 2;
         const int MODERN_WRITE_ATTEMPTS = 5;
         const int MODERN_MID_ATTEMPTS = 5;
         const int MODERN_MID_RETRY_DELAY_MS = 200;
@@ -423,16 +425,156 @@ namespace BK7231Flasher
         byte[] tmp = new byte[4096];
         void consumePending()
         {
-            if (serial.BytesToRead > 0)
+            int pending = serial.BytesToRead;
+            while (pending > 0)
             {
-                serial.Read(tmp, 0, serial.BytesToRead);
+                int readLength = Math.Min(tmp.Length, pending);
+                int readNow = serial.Read(tmp, 0, readLength);
+                if (readNow <= 0)
+                {
+                    break;
+                }
+                pending -= readNow;
             }
         }
 
-        byte[] Start_Cmd(byte[] txbuf, int rxLen = 0, float timeout = 0.05f)
+        bool tryGetResponseHeader(byte[] txbuf, byte? expectedResponseCommand, out bool extended, out byte command)
         {
-            consumePending();
-            int realRead = 0;
+            extended = txbuf != null && txbuf.Length > 7 && txbuf[3] == 0xff && txbuf[4] == 0xf4;
+            if (expectedResponseCommand.HasValue)
+            {
+                command = expectedResponseCommand.Value;
+                return true;
+            }
+            if (txbuf == null)
+            {
+                command = 0;
+                return false;
+            }
+            command = extended ? txbuf[7] : txbuf[4];
+            if (extended == false && (command == 0x00 || command == 0x02))
+            {
+                command++;
+            }
+            return true;
+        }
+
+        bool responseHeaderMatches(List<byte> received, int offset, int rxLen, bool extended, byte command)
+        {
+            if (received[offset] != 0x04 || received[offset + 1] != 0x0e)
+            {
+                return false;
+            }
+            if (extended)
+            {
+                int declaredLength = received[offset + 7] | (received[offset + 8] << 8);
+                int expectedLength = rxLen - 9;
+                bool lengthMatches = declaredLength == expectedLength
+                    || (command == (byte)CommandCode.FlashGetMID && declaredLength == expectedLength - 1);
+                return lengthMatches && received[offset + 2] == 0xff && received[offset + 3] == 0x01
+                    && received[offset + 4] == 0xe0 && received[offset + 5] == 0xfc
+                    && received[offset + 6] == 0xf4 && received[offset + 9] == command;
+            }
+            return received[offset + 2] + 3 == rxLen
+                && received[offset + 3] == 0x01 && received[offset + 4] == 0xe0
+                && received[offset + 5] == 0xfc && received[offset + 6] == command;
+        }
+
+        bool responseDetailsMatch(byte[] response, byte[] txbuf, bool extended, byte command)
+        {
+            if (txbuf == null)
+            {
+                return true;
+            }
+            if (extended == false && command == (byte)CommandCode.ReadReg && response.Length >= 11)
+            {
+                return readInt32LE(response, 7) == readInt32LE(txbuf, 5);
+            }
+            if (extended == false)
+            {
+                return true;
+            }
+            if (command == (byte)CommandCode.FlashWrite && response.Length >= 15)
+            {
+                return readInt32LE(response, 11) == readInt32LE(txbuf, 8);
+            }
+            if ((command == (byte)CommandCode.FlashRead4K || command == (byte)CommandCode.FlashWrite4K)
+                && isModernFullProtocolChip() && response.Length >= 15)
+            {
+                return readInt32LE(response, 11) == readInt32LE(txbuf, 8);
+            }
+            if (command == (byte)CommandCode.FlashErase && isModernFullProtocolChip() && response.Length >= 16)
+            {
+                return response[11] == txbuf[8] && readInt32LE(response, 12) == readInt32LE(txbuf, 9);
+            }
+            if (command == (byte)CommandCode.FlashReadSR && response.Length >= 13)
+            {
+                return response[11] == txbuf[8];
+            }
+            if (command == (byte)CommandCode.FlashWriteSR && response.Length >= 13)
+            {
+                int valueLength = response.Length - 12;
+                for (int i = 0; i < valueLength; i++)
+                {
+                    if (response[12 + i] != txbuf[9 + i])
+                    {
+                        return false;
+                    }
+                }
+                return response[11] == txbuf[8];
+            }
+            return true;
+        }
+
+        bool tryExtractResponse(List<byte> received, int rxLen, byte[] txbuf, byte? expectedResponseCommand, out byte[] response)
+        {
+            response = null;
+            if (tryGetResponseHeader(txbuf, expectedResponseCommand, out bool extended, out byte command) == false)
+            {
+                return false;
+            }
+            int headerLength = extended ? 10 : 7;
+            while (received.Count >= headerLength)
+            {
+                int headerOffset = -1;
+                for (int offset = 0; offset <= received.Count - headerLength; offset++)
+                {
+                    if (responseHeaderMatches(received, offset, rxLen, extended, command))
+                    {
+                        headerOffset = offset;
+                        break;
+                    }
+                }
+                if (headerOffset < 0)
+                {
+                    received.RemoveRange(0, received.Count - headerLength + 1);
+                    return false;
+                }
+                if (headerOffset > 0)
+                {
+                    received.RemoveRange(0, headerOffset);
+                }
+                if (received.Count < rxLen)
+                {
+                    return false;
+                }
+                byte[] candidate = received.GetRange(0, rxLen).ToArray();
+                if (responseDetailsMatch(candidate, txbuf, extended, command))
+                {
+                    response = candidate;
+                    return true;
+                }
+                received.RemoveRange(0, rxLen);
+            }
+            return false;
+        }
+
+        byte[] Start_Cmd(byte[] txbuf, int rxLen = 0, float timeout = 0.05f, byte? expectedResponseCommand = null)
+        {
+            if (txbuf != null)
+            {
+                consumePending();
+            }
             serial.ReadTimeout = (int)(10*cfg_readTimeOutMultForSerialClass);
             if(txbuf != null)
             {
@@ -444,7 +586,8 @@ namespace BK7231Flasher
             timer.Start();
             if (rxLen > 0)
             {
-                byte[] ret = new byte[rxLen];
+                List<byte> received = new List<byte>(rxLen);
+                byte[] readBuffer = new byte[Math.Min(Math.Max(rxLen, 256), 4096)];
                 while (timer.Elapsed.TotalSeconds < timeout * cfg_readTimeOutMultForLoop)
                 {
                     try
@@ -452,22 +595,26 @@ namespace BK7231Flasher
                         if (cfg_readReplyStyle == 0)
                         {
                             //addLog("serial.BytesToRead " + serial.BytesToRead+"");
-                            if (serial.BytesToRead >= rxLen)
+                            int available = serial.BytesToRead;
+                            if (available > 0 && (received.Count > 0 || available >= rxLen))
                             {
                                 //  addLog("Tries to read!");
-                                int readNow = serial.Read(ret, realRead, rxLen - realRead);
-                                realRead += readNow;
+                                int readNow = serial.Read(readBuffer, 0, Math.Min(readBuffer.Length, available));
+                                for (int i = 0; i < readNow; i++)
+                                {
+                                    received.Add(readBuffer[i]);
+                                }
                                 if (bDebugUART)
                                 {
-                                    addLog("Read len: " + realRead + Environment.NewLine);
+                                    addLog("Read len: " + received.Count + Environment.NewLine);
                                 }
-                                if (realRead == rxLen)
+                                if (tryExtractResponse(received, rxLen, txbuf, expectedResponseCommand, out byte[] response))
                                 {
                                     if (bDebugUART)
                                     {
                                         addLog("Got UART reply!" + Environment.NewLine);
                                     }
-                                    return ret;
+                                    return response;
                                 }
                             }
                         }
@@ -478,22 +625,22 @@ namespace BK7231Flasher
                             if (ava > 0)
                             {
                                 //  addLog("Tries to read!");
-                                int wantsToRead = rxLen - realRead;
-                                if (wantsToRead > ava)
-                                    wantsToRead = ava;
-                                int readNow = serial.Read(ret, realRead, wantsToRead);
-                                realRead += readNow;
+                                int readNow = serial.Read(readBuffer, 0, Math.Min(readBuffer.Length, ava));
+                                for (int i = 0; i < readNow; i++)
+                                {
+                                    received.Add(readBuffer[i]);
+                                }
                                 if (bDebugUART)
                                 {
-                                    addLog("Read len: " + realRead + Environment.NewLine);
+                                    addLog("Read len: " + received.Count + Environment.NewLine);
                                 }
-                                if (realRead >= rxLen)
+                                if (tryExtractResponse(received, rxLen, txbuf, expectedResponseCommand, out byte[] response))
                                 {
                                     if (bDebugUART)
                                     {
                                         addLog("Got UART reply!" + Environment.NewLine);
                                     }
-                                    return ret;
+                                    return response;
                                 }
                             }
                         }
@@ -511,21 +658,6 @@ namespace BK7231Flasher
                 if (rxLen > 10)
                 {
                     addLog("failed with serial.BytesToRead " + serial.BytesToRead + " (expected " + rxLen+")" + Environment.NewLine);
-                    try
-                    {
-                        string s = "";
-                        int loaded = serial.BytesToRead;
-                        for(int k = 0; k < loaded && k < 16; k++)
-                        {
-                            byte dataByte = (byte) serial.ReadByte();
-                            s += dataByte.ToString("X2");
-                        }
-                        addLog("The beginning of buffer in UART contains " + s + " data." + Environment.NewLine);
-                    }
-                    catch(Exception ex)
-                    {
-
-                    }
                 }
                 return null;
             }
@@ -813,7 +945,7 @@ namespace BK7231Flasher
             }
         }
 
-        bool tryDecodeLinkStage(byte[] response, out BekenLinkStage stage)
+        bool tryDecodeLinkStage(byte requestCommand, byte[] response, out BekenLinkStage stage)
         {
             stage = BekenLinkStage.Unknown;
             if (response == null || response.Length < CalcRxLength_LinkCheck())
@@ -822,7 +954,7 @@ namespace BK7231Flasher
             }
             if (response[0] != 0x04 || response[1] != 0x0e || response[2] != 0x05
                 || response[3] != 0x01 || response[4] != 0xe0 || response[5] != 0xfc
-                || response[7] != 0x00)
+                || response[6] != requestCommand + 1 || response[7] != 0x00)
             {
                 return false;
             }
@@ -845,7 +977,7 @@ namespace BK7231Flasher
             {
                 return;
             }
-            if (tryDecodeLinkStage(response, out BekenLinkStage stage) == false)
+            if (tryDecodeLinkStage(requestCommand, response, out BekenLinkStage stage) == false)
             {
                 return;
             }
@@ -2056,6 +2188,19 @@ namespace BK7231Flasher
 
             addWarning("BK7252U: flash size wrap-around not detected, keeping default 2MB and wire base 0x200000." + Environment.NewLine);
         }
+        float getCRCCommandTimeout(int rangeLength)
+        {
+            if (isModernFullProtocolChip() == false)
+            {
+                return 5.0f;
+            }
+            if (rangeLength <= SECTOR_SIZE)
+            {
+                return MODERN_COMMAND_TIMEOUT;
+            }
+            return Math.Max(5.0f, rangeLength / (float)0x40000);
+        }
+
         bool tryGetDeviceCRC(int start, int endExclusive, out uint crc)
         {
             crc = 0;
@@ -2064,8 +2209,7 @@ namespace BK7231Flasher
             {
                 commandEnd--;
             }
-            float timeout = isModernFullProtocolChip() && endExclusive - start <= SECTOR_SIZE
-                ? MODERN_COMMAND_TIMEOUT : 5.0f;
+            float timeout = getCRCCommandTimeout(endExclusive - start);
             byte[] response = Start_Cmd(BuildCmd_CheckCRC(start, commandEnd), CalcRxLength_CheckCRC(), timeout);
             if (response == null)
             {
@@ -2081,14 +2225,14 @@ namespace BK7231Flasher
             return true;
         }
 
-        ModernPageCRCResult verifyModernPageCRC(int address, byte[] page, out uint deviceCRC, out uint localCRC)
+        CRCVerificationResult verifyCRC(int start, int endExclusive, byte[] data, out uint deviceCRC, out uint localCRC)
         {
-            localCRC = CRC.crc32_ver2(0xffffffff, page);
-            if (tryGetDeviceCRC(address, address + SECTOR_SIZE, out deviceCRC) == false)
+            localCRC = CRC.crc32_ver2(0xffffffff, data);
+            if (tryGetDeviceCRC(start, endExclusive, out deviceCRC) == false)
             {
-                return ModernPageCRCResult.TransportError;
+                return CRCVerificationResult.TransportError;
             }
-            return deviceCRC == localCRC ? ModernPageCRCResult.Match : ModernPageCRCResult.Mismatch;
+            return deviceCRC == localCRC ? CRCVerificationResult.Match : CRCVerificationResult.Mismatch;
         }
 
         float getModernReadTimeout()
@@ -2139,12 +2283,12 @@ namespace BK7231Flasher
                     continue;
                 }
                 writeBeforeVerification = false;
-                ModernPageCRCResult crcResult = verifyModernPageCRC(address, page, out uint deviceCRC, out uint localCRC);
-                if (crcResult == ModernPageCRCResult.Match)
+                CRCVerificationResult crcResult = verifyCRC(address, address + SECTOR_SIZE, page, out uint deviceCRC, out uint localCRC);
+                if (crcResult == CRCVerificationResult.Match)
                 {
                     return true;
                 }
-                if (crcResult == ModernPageCRCResult.TransportError)
+                if (crcResult == CRCVerificationResult.TransportError)
                 {
                     addWarning("Write page " + formatHex(address) + " CRC command failed on attempt " + attempt
                         + "; retrying verification without erasing." + Environment.NewLine);
@@ -2232,16 +2376,36 @@ namespace BK7231Flasher
             else
             {
                 bool finalModernAttempt = modernRangeAttempt >= MODERN_READ_RANGE_ATTEMPTS;
-                bool ignoreCRCError = modernProtocol ? finalModernAttempt && bIgnoreCRCErr : bIgnoreCRCErr;
-                bool crcAccepted = checkCRC(startSector, sectors, result, ignoreCRCError, out crcVerified);
-                if (modernProtocol && crcVerified == false && finalModernAttempt == false)
+                CRCVerificationResult crcResult = checkCRCResult(startSector, sectors, result, modernProtocol);
+                if (modernProtocol && crcResult == CRCVerificationResult.TransportError)
                 {
-                    addWarning("CRC verification failed; retrying the modern read range ("
+                    for (int crcAttempt = 2; crcAttempt <= MODERN_RANGE_CRC_ATTEMPTS; crcAttempt++)
+                    {
+                        addWarning("CRC command failed; retrying verification without rereading flash ("
+                            + crcAttempt + "/" + MODERN_RANGE_CRC_ATTEMPTS + ")." + Environment.NewLine);
+                        crcResult = checkCRCResult(startSector, sectors, result, true);
+                        if (crcResult != CRCVerificationResult.TransportError)
+                        {
+                            break;
+                        }
+                    }
+                }
+                if (modernProtocol && crcResult == CRCVerificationResult.Mismatch && finalModernAttempt == false)
+                {
+                    addWarning("CRC mismatch; retrying the modern read range ("
                         + (modernRangeAttempt + 1) + "/" + MODERN_READ_RANGE_ATTEMPTS + ")." + Environment.NewLine);
                     return readChunk(startSector, sectors, allowBlank, modernRangeAttempt + 1);
                 }
-                if (crcAccepted == false)
+                crcVerified = crcResult == CRCVerificationResult.Match;
+                bool ignoreCRCError = modernProtocol
+                    ? bIgnoreCRCErr && (finalModernAttempt || crcResult == CRCVerificationResult.TransportError)
+                    : bIgnoreCRCErr;
+                if (acceptCRCResult(crcResult, ignoreCRCError) == false)
                 {
+                    logger.setState("CRC verification failed!", Color.Red);
+                    addError(crcResult == CRCVerificationResult.TransportError
+                        ? "CRC command failed after retrying verification." + Environment.NewLine
+                        : "CRC still mismatched after rereading the flash range." + Environment.NewLine);
                     return null;
                 }
             }
@@ -2289,44 +2453,69 @@ namespace BK7231Flasher
         }
         bool checkCRC(int startSector, int total, byte [] array)
         {
-            return checkCRC(startSector, total, array, bIgnoreCRCErr, out _);
+            return acceptCRCResult(checkCRCResult(startSector, total, array), bIgnoreCRCErr);
         }
-        bool checkCRC(int startSector, int total, byte [] array, bool ignoreCRCError, out bool verified)
+
+        CRCVerificationResult checkCRCResult(int startSector, int total, byte [] array, bool failureIsRecoverable = false)
         {
-            verified = false;
             logger.setState("Doing CRC verification...", Color.Transparent);
             addLog("Starting CRC check for " + total + " sectors, starting at offset 0x" + startSector.ToString("X2") + Environment.NewLine);
             int last = startSector + total * SECTOR_SIZE;
-            uint our_crc = CRC.crc32_ver2(0xffffffff, array);
-            if (tryGetDeviceCRC(startSector, last, out uint bk_crc) == false)
+            CRCVerificationResult result = verifyCRC(startSector, last, array, out uint bk_crc, out uint our_crc);
+            if (result == CRCVerificationResult.TransportError)
             {
-                logger.setState("CRC command failed!", Color.Red);
-                addError("Failed to read CRC from the chip." + Environment.NewLine);
-                if (ignoreCRCError)
+                if (failureIsRecoverable)
                 {
-                    addWarning("IgnoreCRCErr checked, bin will be accepted without a device CRC." + Environment.NewLine);
-                    return true;
+                    addWarning("Failed to read CRC from the chip." + Environment.NewLine);
                 }
-                return false;
+                else
+                {
+                    logger.setState("CRC command failed!", Color.Red);
+                    addError("Failed to read CRC from the chip." + Environment.NewLine);
+                }
+                return result;
             }
-            if (bk_crc != our_crc)
+            if (result == CRCVerificationResult.Mismatch)
             {
-                logger.setState("CRC mismatch!", Color.Red);
-                addError("CRC mismatch!" + Environment.NewLine);
-                addError("Send by BK " + formatHex(bk_crc) + ", our CRC " + formatHex(our_crc) + Environment.NewLine);
-                if (isModernFullProtocolChip() == false)
+                if (failureIsRecoverable)
                 {
-                    addError("Maybe you have wrong chip type set?" + Environment.NewLine);
-                    addError("Did you set BK7231T but have in reality BK7231N or BK7231M?" + Environment.NewLine);
+                    addWarning("CRC mismatch: device " + formatHex(bk_crc) + ", local " + formatHex(our_crc) + "." + Environment.NewLine);
                 }
-                if (ignoreCRCError) {
-                    addWarning("IgnoreCRCErr checked, bin will be saved even if there is a crc mismatch" + Environment.NewLine);
-                    return true;
+                else
+                {
+                    logger.setState("CRC mismatch!", Color.Red);
+                    addError("CRC mismatch!" + Environment.NewLine);
+                    addError("Send by BK " + formatHex(bk_crc) + ", our CRC " + formatHex(our_crc) + Environment.NewLine);
+                    if (isModernFullProtocolChip() == false)
+                    {
+                        addError("Maybe you have wrong chip type set?" + Environment.NewLine);
+                        addError("Did you set BK7231T but have in reality BK7231N or BK7231M?" + Environment.NewLine);
+                    }
                 }
-                return false;
+                return result;
             }
-            verified = true;
             addSuccess("CRC matches " + formatHex(bk_crc) + "!" + Environment.NewLine);
+            return result;
+        }
+
+        bool acceptCRCResult(CRCVerificationResult result, bool ignoreCRCError)
+        {
+            if (result == CRCVerificationResult.Match)
+            {
+                return true;
+            }
+            if (ignoreCRCError == false)
+            {
+                return false;
+            }
+            if (result == CRCVerificationResult.TransportError)
+            {
+                addWarning("IgnoreCRCErr checked, bin will be accepted without a device CRC." + Environment.NewLine);
+            }
+            else
+            {
+                addWarning("IgnoreCRCErr checked, bin will be saved even if there is a crc mismatch" + Environment.NewLine);
+            }
             return true;
         }
         bool checkBK7252ReadCRC(int startSector, int total, byte[] array)
@@ -2876,7 +3065,7 @@ namespace BK7231Flasher
             Thread.Sleep(delay_ms/2);
             int prev = serial.BaudRate;
             serial.BaudRate = baudrate;
-            byte[] rxbuf = Start_Cmd(null, CalcRxLength_SetBaudRate(), 0.5f);
+            byte[] rxbuf = Start_Cmd(null, CalcRxLength_SetBaudRate(), 0.5f, (byte)CommandCode.SetBaudRate);
             if (rxbuf != null)
             {
                 if (CheckRespond_SetBaudRate(rxbuf, baudrate, delay_ms))
