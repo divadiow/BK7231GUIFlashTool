@@ -109,9 +109,9 @@ namespace BK7231Flasher
         private const int SysVersionIdRegister = 0x44010004;
         private const int AonRevisionIdRegister = 0x440001F0;
 
-        // Only keep IDs here that we have evidence can come back from the newer ReadReg path.
-        // Legacy BK7231T/BK7231U/BK7252 modes are intentionally left out because this tool
-        // does not do a proven chip-ID probe for their older bootloader flow.
+        // Only keep IDs here that we have evidence can come back from CMD_ReadReg chip-ID probes.
+        // BK7231T/BK7231U/BK7252 modes are intentionally left out because this tool does not
+        // have a proven chip-ID register probe for their command flow.
         // BK7231M is intentionally mapped to the same chip ID as BK7231N for chip identity
         // checks only. Its separate relaxed encryption-key behavior remains in BK7231Flasher.cs.
         // Entries without matching BKType values are identification-only: they can be logged
@@ -144,22 +144,26 @@ namespace BK7231Flasher
                 { "20340b10", new BKChipIdentityDefinition("BK7236 / BK7258 family", BKType.BK7236, BKType.BK7258) },
             };
 
-        public static bool ShouldAttemptRead(BKType selectedType)
+        public static bool ShouldAttemptChipIdRead(BKType selectedType)
         {
             switch (selectedType)
             {
-                case BKType.BK7231T:
-                case BKType.BK7231U:
-                case BKType.BK7252:
-                    return false;
-                default:
+                case BKType.BK7231M:
+                case BKType.BK7231N:
+                case BKType.BK7236:
+                case BKType.BK7238:
+                case BKType.BK7239N:
+                case BKType.BK7252N:
+                case BKType.BK7258:
                     return true;
+                default:
+                    return false;
             }
         }
 
         public static BKChipIdentityResult Detect(BKType selectedType, Func<int, byte[]> readRegister)
         {
-            if (ShouldAttemptRead(selectedType) == false)
+            if (ShouldAttemptChipIdRead(selectedType) == false)
             {
                 return new BKChipIdentityResult(null, null, null, null, null);
             }
@@ -226,9 +230,9 @@ namespace BK7231Flasher
             return bestResult;
         }
 
-        public static string BuildReadRegFailureWarning(BKType selectedType)
+        public static string BuildChipIdReadFailureWarning(BKType selectedType)
         {
-            if (ShouldAttemptRead(selectedType) == false)
+            if (ShouldAttemptChipIdRead(selectedType) == false)
             {
                 return null;
             }
@@ -242,8 +246,7 @@ namespace BK7231Flasher
                 case BKType.BK7236:
                 case BKType.BK7239N:
                 case BKType.BK7258:
-                    // All newer ReadReg-capable modes try both known chip-ID register locations.
-                    // Probe order is biased toward the selected mode's expected primary register.
+                    // These modes prefer SYS_VERSION; every supported chip-ID probe tries both locations.
                     yield return SysVersionIdRegister;
                     yield return SctrlChipIdRegister;
                     break;
