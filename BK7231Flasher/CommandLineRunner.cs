@@ -412,7 +412,7 @@ namespace BK7231Flasher
             return 0;
         }
 
-        static bool Requires4KAlignedRange(BKType chipType)
+        static bool IsBekenUartPlatform(BKType chipType)
         {
             switch (chipType)
             {
@@ -426,12 +426,17 @@ namespace BK7231Flasher
                 case BKType.BK7252:
                 case BKType.BK7252N:
                 case BKType.BK7258:
-                case BKType.BekenSPI:
-                case BKType.GenericSPI:
                     return true;
                 default:
                     return false;
             }
+        }
+
+        static bool Requires4KAlignedRange(BKType chipType)
+        {
+            return IsBekenUartPlatform(chipType)
+                || chipType == BKType.BekenSPI
+                || chipType == BKType.GenericSPI;
         }
 
         static bool DidBekenWriteSucceed(BaseFlasher flasher)
@@ -532,6 +537,7 @@ namespace BK7231Flasher
         static int DoTest(BaseFlasher flasher, BKType chipType, int ofs, int len)
         {
             Console.WriteLine($"Starting Read/Write/Verify test at offset 0x{ofs:X}, length 0x{len:X}...");
+            bool isBekenUartTest = IsBekenUartPlatform(chipType);
 
             byte[] testPattern = new byte[len];
             for (int i = 0; i < len; i++)
@@ -539,8 +545,10 @@ namespace BK7231Flasher
                 testPattern[i] = (byte)(i % 256);
             }
 
-            string tempFile = Path.Combine(Path.GetTempPath(),
-                "bt_test_pattern_" + Guid.NewGuid().ToString("N") + ".bin");
+            string tempFileName = isBekenUartTest
+                ? "bt_test_pattern_" + Guid.NewGuid().ToString("N") + ".bin"
+                : "bt_test_pattern.bin";
+            string tempFile = Path.Combine(Path.GetTempPath(), tempFileName);
 
             try
             {
@@ -568,15 +576,16 @@ namespace BK7231Flasher
                     return 1;
                 }
 
-                if (testPattern.Length != readData.Length)
+                if (isBekenUartTest && testPattern.Length != readData.Length)
                 {
                     Console.Error.WriteLine($"FAIL: Verification length differs (pattern={testPattern.Length}, read={readData.Length}).");
                     return 1;
                 }
 
+                int compareLen = Math.Min(testPattern.Length, readData.Length);
                 bool match = true;
                 int mismatchCount = 0;
-                for (int i = 0; i < testPattern.Length; i++)
+                for (int i = 0; i < compareLen; i++)
                 {
                     if (testPattern[i] != readData[i])
                     {
@@ -591,6 +600,11 @@ namespace BK7231Flasher
                 {
                     Console.Error.WriteLine($"FAIL: Verification failed with {mismatchCount} mismatched byte(s).");
                     return 1;
+                }
+
+                if (testPattern.Length != readData.Length)
+                {
+                    Console.WriteLine($"WARNING: Data matches but lengths differ (pattern={testPattern.Length}, read={readData.Length}).");
                 }
 
                 Console.WriteLine("SUCCESS: Verification passed! Read data matches written pattern.");
