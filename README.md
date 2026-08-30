@@ -122,7 +122,7 @@ No command line and no strange arguments required.
 6. Click "Download latest from Web" to get proper binary file, or place a matching firmware file manually in the `firmwares` directory
 7. Wait for download to finish
 
-![image](https://user-images.githubusercontent.com/85486843/210281125-a3e25ab2-3144-4e02-30b7-ef784f5cbd56.png)
+![image](https://user-images.githubusercontent.com/85486843/210281125-a3e25ab2-3144-4e02-a30c-6e135ecefd24.png)
 
 8. Close download window
 9. Click "Backup and flash new"
@@ -131,7 +131,7 @@ No command line and no strange arguments required.
     - **Option A:** short CEN to GND for 0.25s (it is tricky to get this right, requires precise timing)
     - **Option B:** power off and on device (of course, it should not be connected to mains, use your own safe 3.3V power supply that can supply enough current)
   
-![image](https://user-images.githubusercontent.com/85486843/210281194-27decf09-723e-41f7-8b47-6fe2b6bb4876.png)
+![image](https://user-images.githubusercontent.com/85486843/210281194-27decf09-723e-41f7-8b47-6fe2b6bb4857.png)
 
 11. It will begin reading (it does first backup, then write)
 
