@@ -2,6 +2,12 @@
 
 BK7231 GUI Flash Tool is a simple Windows application that allows you to back up and flash OpenBK/OpenBeken and related Open\* firmware projects to supported IoT chips without extensive programming knowledge. The tool originally focused on Beken BK7231T/BK7231N devices, but the current version supports a wider set of chip and platform modes.
 
+## Code signing policy
+
+The project is preparing an application for **free code signing provided by SignPath.io, certificate by SignPath Foundation**. Official signed releases will be built from this repository on GitHub-hosted runners and manually approved before publication. See [CODE_SIGNING.md](CODE_SIGNING.md) for the release, privacy and signing policy.
+
+SignPath Foundation requires an explicit OSI-approved project licence, so signing cannot be activated until the repository licence is resolved.
+
 Supported GUI-selectable chip/platform modes:
 - Beken UART:
   - BK7231M
@@ -116,7 +122,7 @@ No command line and no strange arguments required.
 6. Click "Download latest from Web" to get proper binary file, or place a matching firmware file manually in the `firmwares` directory
 7. Wait for download to finish
 
-![image](https://user-images.githubusercontent.com/85486843/210281125-a3e25ab2-3144-4e02-a30c-6e135ecefd24.png)
+![image](https://user-images.githubusercontent.com/85486843/210281125-a3e25ab2-3144-4e02-30b7-ef784f5cbd56.png)
 
 8. Close download window
 9. Click "Backup and flash new"
@@ -125,7 +131,7 @@ No command line and no strange arguments required.
     - **Option A:** short CEN to GND for 0.25s (it is tricky to get this right, requires precise timing)
     - **Option B:** power off and on device (of course, it should not be connected to mains, use your own safe 3.3V power supply that can supply enough current)
   
-![image](https://user-images.githubusercontent.com/85486843/210281194-27decf09-723e-41f7-8b47-6fe2b6bb4857.png)
+![image](https://user-images.githubusercontent.com/85486843/210281194-27decf09-723e-41f7-8b47-6fe2b6bb4876.png)
 
 11. It will begin reading (it does first backup, then write)
 
