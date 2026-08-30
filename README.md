@@ -48,8 +48,6 @@ Supported GUI-selectable chip/platform modes:
   - XR809
   - XR872 (XF16)
 
-BK7239N support currently covers stock flash backup, raw flash operations, and ROM, OTP, and eFuse reads; an OpenBeken firmware build is not yet available.
-
 Furthermore, it can automatically create an original firmware backup before flashing, attempt Tuya GPIO/config extraction from backups, and read/write OBK configuration where the selected platform supports it.
 
 Other built-in tools include:

@@ -716,11 +716,6 @@ namespace BK7231Flasher
         float cfg_readTimeOutMultForSerialClass;
         void downloadLatestFor(BKType type)
         {
-            if (type == BKType.BK7239N)
-            {
-                MessageBox.Show("BK7239N flash, ROM, OTP, and eFuse operations are supported, but an OpenBK7239N release build is not currently available.");
-                return;
-            }
             FormDownloader fd = new FormDownloader(this, type);
             fd.ShowDialog();
             refreshType();
