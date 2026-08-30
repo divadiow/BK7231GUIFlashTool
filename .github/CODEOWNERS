@@ -1,0 +1,5 @@
+# Security-sensitive release and signing configuration.
+/.github/workflows/build.yml @openshwprojects
+/.github/CODEOWNERS @openshwprojects
+/CODE_SIGNING.md @openshwprojects
+/.signpath/ @openshwprojects
