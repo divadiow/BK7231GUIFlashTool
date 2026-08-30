@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <zip-file>
+    <pe-file path="BK7231Flasher.exe"
+             product-name="BK7231Flasher"
+             product-version="1.0.0.0"
+             file-version="1.0.0.0"
+             original-filename="BK7231Flasher.exe">
+      <authenticode-sign hash-algorithm="sha256"
+                         description="BK7231 GUI Flash Tool"
+                         description-url="https://github.com/openshwprojects/BK7231GUIFlashTool" />
+    </pe-file>
+  </zip-file>
+</artifact-configuration>
