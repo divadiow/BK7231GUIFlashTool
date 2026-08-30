@@ -12,6 +12,9 @@ on:
 jobs:
   build:
     runs-on: windows-latest
+    permissions:
+      contents: read
+      actions: read
     env:
       FLASHERVERSION: ${{ github.run_number }}
 
@@ -34,6 +37,56 @@ jobs:
           dir BuildOutput
           dir BuildOutput\Release
 
+      # SignPath Foundation requires official release binaries to come from a
+      # verifiable trusted build and to receive manual signing approval. Normal
+      # push/PR builds remain unsigned CI artifacts; only an explicit manual
+      # release run from main enters the signing flow.
+      - name: Upload executable for SignPath
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+        id: upload-signing-input
+        uses: actions/upload-artifact@v6
+        with:
+          name: BK7231GUIFlashTool-SignPath-input-${{ github.run_id }}
+          path: BK7231Flasher/BuildOutput/Release/BK7231Flasher.exe
+          if-no-files-found: error
+
+      - name: Submit SignPath signing request
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: '${{ secrets.SIGNPATH_API_TOKEN }}'
+          organization-id: '${{ vars.SIGNPATH_ORGANIZATION_ID }}'
+          project-slug: '${{ vars.SIGNPATH_PROJECT_SLUG }}'
+          signing-policy-slug: '${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}'
+          artifact-configuration-slug: '${{ vars.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}'
+          github-artifact-id: '${{ steps.upload-signing-input.outputs.artifact-id }}'
+          wait-for-completion: true
+          output-artifact-directory: 'BuildOutput/Signed'
+
+      - name: Replace executable with signed build
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+        shell: powershell
+        run: |
+          $signed = Get-ChildItem -Path 'BuildOutput\Signed' -Filter 'BK7231Flasher.exe' -File -Recurse | Select-Object -First 1
+          if (-not $signed) {
+              throw 'SignPath completed but BK7231Flasher.exe was not found in the returned artifact.'
+          }
+          Copy-Item -LiteralPath $signed.FullName -Destination 'BK7231Flasher\BuildOutput\Release\BK7231Flasher.exe' -Force
+
+      - name: Verify Authenticode signature
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+        shell: powershell
+        run: |
+          $target = 'BK7231Flasher\BuildOutput\Release\BK7231Flasher.exe'
+          $signature = Get-AuthenticodeSignature -LiteralPath $target
+          Write-Host ('Signature status: ' + $signature.Status)
+          if ($signature.SignerCertificate) {
+              Write-Host ('Signer: ' + $signature.SignerCertificate.Subject)
+          }
+          if ($signature.Status -ne 'Valid') {
+              throw ('Signed release executable failed Authenticode validation: ' + $signature.Status)
+          }
+
       - name: Upload Build Artifacts
         uses: actions/upload-artifact@v6
         with:
@@ -41,7 +94,7 @@ jobs:
           path: |
             BK7231Flasher/BuildOutput/Release/*.exe
             BK7231Flasher/BuildOutput/Release/*.dll
-          if-no-files-found: warn
+          if-no-files-found: error
 
       - name: Debug Build Output Directory
         run: |
@@ -51,13 +104,15 @@ jobs:
   release:
     needs: build
     runs-on: windows-latest
-    if: github.ref == 'refs/heads/main'
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
 
-      - name: Download Build Artifacts
+      - name: Download signed build artifacts
         uses: actions/download-artifact@v7
         with:
           name: BK7231GUIFlashTool
@@ -69,17 +124,18 @@ jobs:
           move *.exe BuildOutput/Release/
           move *.dll BuildOutput/Release/
 
-      #- name: Copy loaders directory into release
-      #  run: |
-      #    echo "Copying /loaders/ into BuildOutput/Release..."
-      #    xcopy loaders BuildOutput\Release\loaders /E /I /Y
-
-      - name: Debug Downloaded Artifacts
+      - name: Verify release executable remains signed
+        shell: powershell
         run: |
-          echo "Downloaded artifacts in BuildOutput/Release:"
-          dir BuildOutput/Release
-          #echo "Contents of loaders:"
-          #dir BuildOutput/Release/loaders
+          $target = 'BuildOutput\Release\BK7231Flasher.exe'
+          $signature = Get-AuthenticodeSignature -LiteralPath $target
+          Write-Host ('Signature status: ' + $signature.Status)
+          if ($signature.SignerCertificate) {
+              Write-Host ('Signer: ' + $signature.SignerCertificate.Subject)
+          }
+          if ($signature.Status -ne 'Valid') {
+              throw ('Release packaging received an invalid or unsigned executable: ' + $signature.Status)
+          }
 
       - name: Create ZIP File
         run: |
@@ -92,8 +148,9 @@ jobs:
           tag_name: v${{ github.run_number }}
           name: BK7231GUIFlashTool build ${{ github.run_number }}
           body: |
-            Automated release for BK7231GUIFlashTool.
-            Includes the latest .exe, .dll files, and loaders directory.
+            Official BK7231GUIFlashTool release.
+            BK7231Flasher.exe is Authenticode-signed through SignPath.
+            Free code signing provided by SignPath.io, certificate by SignPath Foundation.
           generate_release_notes: true
           draft: false
           prerelease: false
