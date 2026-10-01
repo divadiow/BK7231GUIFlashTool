@@ -1,0 +1,247 @@
+name: Android Tuya Dump JSON
+
+on:
+  push:
+    branches:
+      - android-tuya-config-extractor
+    paths:
+      - "Android/**"
+      - ".github/workflows/android-tuya-dump-json.yml"
+  pull_request:
+    paths:
+      - "Android/**"
+      - ".github/workflows/android-tuya-dump-json.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-tuya-dump-json-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  android-build-and-corpus:
+    name: Android build and corpus tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out app source
+        uses: actions/checkout@v4
+
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Verify pinned upstream extractor
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "05d89d933cf8d2f0a1cb4f866dc96b50d1111d71293f5aa13a0255366285943a  BK7231Flasher/Utils/TuyaConfig.cs" | sha256sum --check --strict
+
+      - name: Install .NET Android workload
+        shell: bash
+        run: |
+          set -euo pipefail
+          dotnet workload install android --skip-manifest-update
+
+      - name: Build platform-neutral extractor core
+        run: dotnet build Android/TuyaConfig.Core/TuyaConfig.Core.csproj -c Release
+
+      - name: Select representative FlashDumps corpus
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 Android/scripts/select_flashdumps.py divadiow/FlashDumps "$RUNNER_TEMP/tuya-samples" --per-platform 1
+          cat "$RUNNER_TEMP/tuya-samples/manifest.tsv"
+
+      - name: Run wrapper parity and determinism tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/tuya-report"
+          dotnet run --project Android/TuyaConfig.CorpusTest/TuyaConfig.CorpusTest.csproj -c Release -- \
+            "$RUNNER_TEMP/tuya-samples" "$RUNNER_TEMP/tuya-report"
+          cat "$RUNNER_TEMP/tuya-report/test-report.md"
+
+      - name: Generate development signing key
+        shell: bash
+        run: |
+          set -euo pipefail
+          keytool -genkeypair -v \
+            -keystore "$RUNNER_TEMP/tuya-dump-json.keystore" \
+            -storepass android \
+            -keypass android \
+            -alias tuyadumpjson \
+            -keyalg RSA \
+            -keysize 3072 \
+            -validity 3650 \
+            -dname "CN=Tuya Dump JSON Development, OU=Open source build, O=divadiow, C=GB"
+
+      - name: Build signed Android APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          dotnet publish Android/TuyaDumpJsonExtractor/TuyaDumpJsonExtractor.csproj \
+            -f net10.0-android \
+            -c Release \
+            -r android-arm64 \
+            -p:AndroidPackageFormats=apk \
+            -p:AndroidKeyStore=true \
+            -p:AndroidSigningKeyStore="$RUNNER_TEMP/tuya-dump-json.keystore" \
+            -p:AndroidSigningKeyAlias=tuyadumpjson \
+            -p:AndroidSigningKeyPass=android \
+            -p:AndroidSigningStorePass=android
+
+      - name: Verify and package APK/XAPK
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIST="$RUNNER_TEMP/dist"
+          XAPK="$RUNNER_TEMP/xapk"
+          mkdir -p "$DIST" "$XAPK"
+
+          APK="$(find Android/TuyaDumpJsonExtractor/bin/Release/net10.0-android -type f -name '*-Signed.apk' -print -quit)"
+          if [[ -z "$APK" ]]; then
+            echo "Signed APK was not produced" >&2
+            find Android/TuyaDumpJsonExtractor/bin/Release/net10.0-android -maxdepth 5 -type f -print
+            exit 1
+          fi
+
+          FINAL_APK="$DIST/TuyaDumpJsonExtractor-0.1.0.apk"
+          cp "$APK" "$FINAL_APK"
+
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
+          AAPT="$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -n 1)"
+          "$APKSIGNER" verify --verbose --print-certs "$FINAL_APK" | tee "$DIST/apk-signature-report.txt"
+          BADGING="$("$AAPT" dump badging "$FINAL_APK")"
+          printf '%s\n' "$BADGING" | tee "$DIST/apk-badging.txt"
+          TARGET_SDK="$(printf '%s\n' "$BADGING" | sed -n "s/^targetSdkVersion:'\([^']*\)'.*/\1/p" | head -n 1)"
+          if [[ -z "$TARGET_SDK" ]]; then
+            echo "Could not determine targetSdkVersion from APK badging" >&2
+            exit 1
+          fi
+
+          cp "$FINAL_APK" "$XAPK/TuyaDumpJsonExtractor-0.1.0.apk"
+          APK_SIZE="$(stat -c '%s' "$FINAL_APK")"
+          cat > "$XAPK/manifest.json" <<JSON
+          {
+            "xapk_version": 2,
+            "package_name": "io.github.divadiow.tuyadumpjson",
+            "name": "Tuya Dump JSON",
+            "version_code": "1",
+            "version_name": "0.1.0",
+            "min_sdk_version": "23",
+            "target_sdk_version": "${TARGET_SDK}",
+            "total_size": ${APK_SIZE},
+            "permissions": [],
+            "apks": [
+              {
+                "id": "base",
+                "file": "TuyaDumpJsonExtractor-0.1.0.apk"
+              }
+            ]
+          }
+          JSON
+          (cd "$XAPK" && zip -9 -r "$DIST/TuyaDumpJsonExtractor-0.1.0.xapk" .)
+
+          cp "$RUNNER_TEMP/tuya-report/test-report.md" "$DIST/"
+          cp "$RUNNER_TEMP/tuya-report/test-results.json" "$DIST/"
+          cp "$RUNNER_TEMP/tuya-samples/manifest.tsv" "$DIST/test-corpus-manifest.tsv"
+
+          zip -9 -r "$DIST/TuyaDumpJsonExtractor-0.1.0-source.zip" \
+            Android \
+            BK7231Flasher/Utils/TuyaConfig.cs \
+            BK7231Flasher/Misc/TuyaModules.cs \
+            .github/workflows/android-tuya-dump-json.yml \
+            -x '*/bin/*' '*/obj/*'
+
+          (cd "$DIST" && sha256sum * > SHA256SUMS.txt)
+          ls -lh "$DIST"
+
+      - name: Upload installables and reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: TuyaDumpJsonExtractor-0.1.0
+          path: ${{ runner.temp }}/dist/*
+          if-no-files-found: error
+          retention-days: 30
+
+  windows-easy-flasher-parity:
+    name: Exact Windows Easy Flasher parity
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      FLASHERVERSION: android-parity-${{ github.run_number }}
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: utf-8
+
+    steps:
+      - name: Check out app source
+        uses: actions/checkout@v4
+
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Verify pinned upstream extractor
+        shell: pwsh
+        run: |
+          $expected = "05d89d933cf8d2f0a1cb4f866dc96b50d1111d71293f5aa13a0255366285943a"
+          $actual = (Get-FileHash -LiteralPath "BK7231Flasher/Utils/TuyaConfig.cs" -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) {
+            throw "TuyaConfig.cs hash mismatch: expected $expected, got $actual"
+          }
+
+      - name: Build current Windows Easy Flasher
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "BK7231Flasher/BuildOutput/Release" | Out-Null
+          msbuild BK7231Flasher/BK7231Flasher.csproj /p:Configuration=Release /p:OutDir=BuildOutput\Release\
+          $exe = Get-ChildItem -LiteralPath "BK7231Flasher/BuildOutput/Release" -Filter "BK7231Flasher.exe" -File -Recurse | Select-Object -First 1
+          if (-not $exe) {
+            throw "BK7231Flasher.exe was not produced."
+          }
+          "EASYFLASHER_EXE=$($exe.FullName)" >> $env:GITHUB_ENV
+
+      - name: Select the same representative FlashDumps corpus
+        shell: pwsh
+        run: |
+          python Android/scripts/select_flashdumps.py divadiow/FlashDumps "$env:RUNNER_TEMP/tuya-samples" --per-platform 1
+          Get-Content -LiteralPath "$env:RUNNER_TEMP/tuya-samples/manifest.tsv"
+
+      - name: Compare complete JSON strings with Windows CLI
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP/windows-parity" | Out-Null
+          dotnet run --project Android/TuyaConfig.WindowsParity/TuyaConfig.WindowsParity.csproj -c Release -- `
+            "$env:EASYFLASHER_EXE" `
+            "$env:RUNNER_TEMP/tuya-samples" `
+            "$env:RUNNER_TEMP/windows-parity"
+          Copy-Item -LiteralPath "$env:RUNNER_TEMP/tuya-samples/manifest.tsv" -Destination "$env:RUNNER_TEMP/windows-parity/test-corpus-manifest.tsv"
+          Get-Content -LiteralPath "$env:RUNNER_TEMP/windows-parity/windows-desktop-parity-report.md"
+
+      - name: Upload Windows parity report
+        uses: actions/upload-artifact@v4
+        with:
+          name: TuyaDumpJsonExtractor-0.1.0-windows-parity
+          path: ${{ runner.temp }}/windows-parity/*
+          if-no-files-found: error
+          retention-days: 30

@@ -1,0 +1,197 @@
+using System;
+using System.Collections.Generic;
+using System.Drawing;
+
+namespace BK7231Flasher
+{
+    /// <summary>
+    /// The desktop extractor formats with Windows newlines. Defining the namespace-local
+    /// Environment shim preserves that output on Android and Linux without modifying TuyaConfig.cs.
+    /// </summary>
+    internal static class Environment
+    {
+        public const string NewLine = "\r\n";
+    }
+
+    /// <summary>Minimal logging adapter expected by TuyaConfig.cs.</summary>
+    public sealed class FormMain
+    {
+        public static FormMain? Singleton { get; set; }
+
+        public FormMain(Action<string>? logSink = null)
+        {
+            LogSink = logSink;
+        }
+
+        public Action<string>? LogSink { get; }
+
+        public void addLog(string message, Color colour)
+        {
+            LogSink?.Invoke(message);
+        }
+    }
+
+    // Values referenced by TuyaConfig.cs and the linked TuyaModules.cs. Numeric identity is
+    // irrelevant here: the extractor compares enum symbols and TuyaModules returns nameof(...).
+    public enum BKType
+    {
+        Invalid = 0,
+        BK7231T,
+        BK7231N,
+        BK7236,
+        BK7238,
+        BK7252N,
+        BK7258,
+        RTL8710B,
+        RTL87X0C,
+        RTL8720D,
+        RTL8721DA,
+        BL602,
+        BL616,
+        ECR6600,
+        LN882H,
+        LN8825,
+        TR6260,
+        XR806,
+        XR809,
+        RDA5981,
+        W800,
+        ESP8266,
+        ESP32S2,
+        ESP32C2,
+        ESP32C3,
+        ESP32C5,
+        ESP32C6,
+        ESP32C61,
+        ESP32S3
+    }
+
+    // Retains upstream ordering so optional OBK pin translation remains source-compatible.
+    public enum PinRole
+    {
+        None,
+        Rel,
+        Rel_n,
+        Btn,
+        Btn_n,
+        LED,
+        LED_n,
+        PWM,
+        WifiLED,
+        WifiLED_n,
+        Btn_Tgl_All,
+        Btn_Tgl_All_n,
+        dInput,
+        dInput_n,
+        TglChanOnTgl,
+        dInput_NoPullUp,
+        dInput_NoPullUp_n,
+        BL0937SEL,
+        BL0937CF,
+        BL0937CF1,
+        ADC,
+        SM2135DAT,
+        SM2135CLK,
+        BP5758D_DAT,
+        BP5758D_CLK,
+        BP1658CJ_DAT,
+        BP1658CJ_CLK,
+        PWM_n,
+        IRRecv,
+        IRSend,
+        Btn_NextColor,
+        Btn_NextColor_n,
+        Btn_NextDimmer,
+        Btn_NextDimmer_n,
+        AlwaysHigh,
+        AlwaysLow,
+        UCS1912_DIN,
+        SM16703P_DIN,
+        Btn_NextTemperature,
+        Btn_NextTemperature_n,
+        Btn_ScriptOnly,
+        Btn_ScriptOnly_n,
+        DHT11,
+        DHT12,
+        DHT21,
+        DHT22,
+        CHT8305_SDA,
+        CHT8305_SCK,
+        SHT3X_SDA,
+        SHT3X_SCK,
+        SoftSDA,
+        SoftSCL,
+        SM2235DAT,
+        SM2235CLK,
+        BridgeFWD,
+        BridgeREV,
+        Btn_SmartLED,
+        Btn_SmartLED_n,
+        DoorSnsrWSleep,
+        DoorSnsrWSleep_nPup,
+        BAT_ADC,
+        BAT_Relay,
+        TM1637_DIO,
+        TM1637_CLK,
+        BL0937SEL_n,
+        DoorSnsrWSleep_pd,
+        SGP_CLK,
+        SGP_DAT,
+        ADC_Button,
+        GN6932_CLK,
+        GN6932_DAT,
+        GN6932_STB,
+        TM1638_CLK,
+        TM1638_DAT,
+        TM1638_STB,
+        BAT_Relay_n,
+        KP18058_CLK,
+        KP18058_DAT,
+        DS1820_IO,
+        PWM_ScriptOnly,
+        PWM_ScriptOnly_n,
+        Counter_f,
+        Counter_r,
+        IRRecv_nPup,
+        StripState,
+        StripState_n,
+        HLW8112_SCSN,
+        RCRecv,
+        RCRecv_nPup,
+        Button_pd,
+        Button_pd_n,
+        ToggleChannelOnToggle_pd,
+        ShutterA,
+        ShutterB,
+        Button_ShutterUp,
+        Button_ShutterDown
+    }
+
+    /// <summary>
+    /// TuyaConfig's human-readable mapping optionally writes an OpenBeken config. Android JSON
+    /// extraction passes null, so this compatibility shell deliberately stores only requested data.
+    /// </summary>
+    public class OBKConfig
+    {
+        private readonly Dictionary<int, PinRole> _roles = new();
+        private readonly Dictionary<int, int> _channels = new();
+
+        public string initCommandLine { get; set; } = string.Empty;
+
+        public void setPinRole(string index, PinRole role)
+        {
+            if (int.TryParse(index, out int value))
+                setPinRole(value, role);
+        }
+
+        public void setPinRole(int index, PinRole role) => _roles[index] = role;
+
+        public void setPinChannel(string index, int channel)
+        {
+            if (int.TryParse(index, out int value))
+                _channels[value] = channel;
+        }
+
+        public void setPinChannel(int index, byte channel) => _channels[index] = channel;
+    }
+}
